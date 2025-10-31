@@ -18,5 +18,5 @@
 --query_denoise 0.05
 --num_queries 10
 --append_crowd
---det_db det_db_motrv2.json
+--det_db det_db_motrv2_dfine_0.8.json
 --use_checkpoint
