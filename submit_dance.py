@@ -48,13 +48,21 @@ class ListImgDataset(Dataset):
         proposals = []
         im_h, im_w = cur_img.shape[:2]
         for line in self.det_db[f_path[:-4] + '.txt']:
-            l, t, w, h, s = list(map(float, line.split(',')))
+            parts = list(map(float, line.split(',')))
+            if len(parts) == 5:  # Old format: x, y, w, h, score (default to person)
+                l, t, w, h, s = parts
+                class_id = 0  # Default to person
+            elif len(parts) == 6:  # New format: x, y, w, h, score, class
+                l, t, w, h, s, class_id = parts
+            else:
+                continue  # Skip malformed lines
             proposals.append([(l + w / 2) / im_w,
                                 (t + h / 2) / im_h,
                                 w / im_w,
                                 h / im_h,
-                                s])
-        return cur_img, torch.as_tensor(proposals).reshape(-1, 5)
+                                s,
+                                class_id])
+        return cur_img, torch.as_tensor(proposals).reshape(-1, 6)  # Changed from 5 to 6
 
     def init_img(self, img, proposals):
         ori_img = img.copy()
@@ -151,10 +159,17 @@ class Detector(object):
         print("totally {} dts {} occlusion dts".format(total_dts, total_occlusion_dts))
 
 class RuntimeTrackerBase(object):
-    def __init__(self, score_thresh=0.6, filter_score_thresh=0.5, miss_tolerance=10):
+    def __init__(self, score_thresh=0.6, filter_score_thresh=0.5, miss_tolerance=10,
+                 ball_score_thresh=0.3, ball_miss_tolerance=5):
+        # Person tracking parameters
         self.score_thresh = score_thresh
         self.filter_score_thresh = filter_score_thresh
         self.miss_tolerance = miss_tolerance
+
+        # Ball tracking parameters (balls are harder to detect consistently)
+        self.ball_score_thresh = ball_score_thresh
+        self.ball_miss_tolerance = ball_miss_tolerance
+
         self.max_obj_id = 0
 
     def clear(self):
@@ -163,25 +178,55 @@ class RuntimeTrackerBase(object):
     def update(self, track_instances: Instances):
         device = track_instances.obj_idxes.device
 
-        track_instances.disappear_time[track_instances.scores >= self.score_thresh] = 0
-        new_obj = (track_instances.obj_idxes == -1) & (track_instances.scores >= self.score_thresh)
-        disappeared_obj = (track_instances.obj_idxes >= 0) & (track_instances.scores < self.filter_score_thresh)
-        num_new_objs = new_obj.sum().item()
+        # Get predicted classes (0=person, 1=ball)
+        if hasattr(track_instances, 'pred_classes'):
+            is_person = track_instances.pred_classes == 0
+            is_ball = track_instances.pred_classes == 1
+        else:
+            # Fallback: assume all are persons if pred_classes not available
+            is_person = torch.ones(len(track_instances), dtype=torch.bool, device=device)
+            is_ball = torch.zeros(len(track_instances), dtype=torch.bool, device=device)
 
+        # Apply class-specific thresholds
+        person_high_score = is_person & (track_instances.scores >= self.score_thresh)
+        ball_high_score = is_ball & (track_instances.scores >= self.ball_score_thresh)
+
+        # Reset disappear time for high-scoring tracks
+        track_instances.disappear_time[person_high_score | ball_high_score] = 0
+
+        # Create new tracks with class-specific thresholds
+        new_person = (track_instances.obj_idxes == -1) & person_high_score
+        new_ball = (track_instances.obj_idxes == -1) & ball_high_score
+        new_obj = new_person | new_ball
+
+        # Disappear logic with class-specific filtering
+        disappeared_person = is_person & (track_instances.obj_idxes >= 0) & \
+                            (track_instances.scores < self.filter_score_thresh)
+        disappeared_ball = is_ball & (track_instances.obj_idxes >= 0) & \
+                          (track_instances.scores < self.ball_score_thresh)
+        disappeared_obj = disappeared_person | disappeared_ball
+
+        num_new_objs = new_obj.sum().item()
         track_instances.obj_idxes[new_obj] = self.max_obj_id + torch.arange(num_new_objs, device=device)
         self.max_obj_id += num_new_objs
 
         track_instances.disappear_time[disappeared_obj] += 1
-        to_del = disappeared_obj & (track_instances.disappear_time >= self.miss_tolerance)
+
+        # Delete tracks with class-specific tolerance
+        to_del_person = disappeared_person & (track_instances.disappear_time >= self.miss_tolerance)
+        to_del_ball = disappeared_ball & (track_instances.disappear_time >= self.ball_miss_tolerance)
+        to_del = to_del_person | to_del_ball
         track_instances.obj_idxes[to_del] = -1
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
-    parser.add_argument('--score_threshold', default=0.5, type=float)
-    parser.add_argument('--update_score_threshold', default=0.5, type=float)
-    parser.add_argument('--miss_tolerance', default=20, type=int)
+    parser.add_argument('--score_threshold', default=0.5, type=float, help='Score threshold for person tracks')
+    parser.add_argument('--update_score_threshold', default=0.5, type=float, help='QIM score threshold')
+    parser.add_argument('--miss_tolerance', default=20, type=int, help='Miss tolerance for person tracks')
+    parser.add_argument('--ball_score_threshold', default=0.3, type=float, help='Score threshold for ball tracks')
+    parser.add_argument('--ball_miss_tolerance', default=5, type=int, help='Miss tolerance for ball tracks')
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -189,7 +234,13 @@ if __name__ == '__main__':
     # load model and weights
     detr, _, _ = build_model(args)
     detr.track_embed.score_thr = args.update_score_threshold
-    detr.track_base = RuntimeTrackerBase(args.score_threshold, args.score_threshold, args.miss_tolerance)
+    detr.track_base = RuntimeTrackerBase(
+        args.score_threshold,
+        args.score_threshold,
+        args.miss_tolerance,
+        args.ball_score_threshold,
+        args.ball_miss_tolerance
+    )
     checkpoint = torch.load(args.resume, map_location='cpu')
     detr = load_model(detr, args.resume)
     detr.eval()

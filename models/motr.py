@@ -300,10 +300,17 @@ class ClipMatcher(SetCriterion):
 
 
 class RuntimeTrackerBase(object):
-    def __init__(self, score_thresh=0.6, filter_score_thresh=0.5, miss_tolerance=10):
+    def __init__(self, score_thresh=0.6, filter_score_thresh=0.5, miss_tolerance=10,
+                 ball_score_thresh=0.3, ball_miss_tolerance=5):
+        # Person tracking parameters
         self.score_thresh = score_thresh
         self.filter_score_thresh = filter_score_thresh
         self.miss_tolerance = miss_tolerance
+
+        # Ball tracking parameters (balls are harder to detect consistently)
+        self.ball_score_thresh = ball_score_thresh
+        self.ball_miss_tolerance = ball_miss_tolerance
+
         self.max_obj_id = 0
 
     def clear(self):
@@ -312,16 +319,44 @@ class RuntimeTrackerBase(object):
     def update(self, track_instances: Instances):
         device = track_instances.obj_idxes.device
 
-        track_instances.disappear_time[track_instances.scores >= self.score_thresh] = 0
-        new_obj = (track_instances.obj_idxes == -1) & (track_instances.scores >= self.score_thresh)
-        disappeared_obj = (track_instances.obj_idxes >= 0) & (track_instances.scores < self.filter_score_thresh)
-        num_new_objs = new_obj.sum().item()
+        # Get predicted classes (0=person, 1=ball)
+        if hasattr(track_instances, 'pred_classes'):
+            is_person = track_instances.pred_classes == 0
+            is_ball = track_instances.pred_classes == 1
+        else:
+            # Fallback: assume all are persons if pred_classes not available
+            is_person = torch.ones(len(track_instances), dtype=torch.bool, device=device)
+            is_ball = torch.zeros(len(track_instances), dtype=torch.bool, device=device)
 
+        # Apply class-specific thresholds
+        person_high_score = is_person & (track_instances.scores >= self.score_thresh)
+        ball_high_score = is_ball & (track_instances.scores >= self.ball_score_thresh)
+
+        # Reset disappear time for high-scoring tracks
+        track_instances.disappear_time[person_high_score | ball_high_score] = 0
+
+        # Create new tracks with class-specific thresholds
+        new_person = (track_instances.obj_idxes == -1) & person_high_score
+        new_ball = (track_instances.obj_idxes == -1) & ball_high_score
+        new_obj = new_person | new_ball
+
+        # Disappear logic with class-specific filtering
+        disappeared_person = is_person & (track_instances.obj_idxes >= 0) & \
+                            (track_instances.scores < self.filter_score_thresh)
+        disappeared_ball = is_ball & (track_instances.obj_idxes >= 0) & \
+                          (track_instances.scores < self.ball_score_thresh)
+        disappeared_obj = disappeared_person | disappeared_ball
+
+        num_new_objs = new_obj.sum().item()
         track_instances.obj_idxes[new_obj] = self.max_obj_id + torch.arange(num_new_objs, device=device)
         self.max_obj_id += num_new_objs
 
         track_instances.disappear_time[disappeared_obj] += 1
-        to_del = disappeared_obj & (track_instances.disappear_time >= self.miss_tolerance)
+
+        # Delete tracks with class-specific tolerance
+        to_del_person = disappeared_person & (track_instances.disappear_time >= self.miss_tolerance)
+        to_del_ball = disappeared_ball & (track_instances.disappear_time >= self.ball_miss_tolerance)
+        to_del = to_del_person | to_del_ball
         track_instances.obj_idxes[to_del] = -1
 
 
@@ -342,9 +377,8 @@ class TrackerPostProcess(nn.Module):
         out_logits = track_instances.pred_logits
         out_bbox = track_instances.pred_boxes
 
-        # prob = out_logits.sigmoid()
-        scores = out_logits[..., 0].sigmoid()
-        # scores, labels = prob.max(-1)
+        # Multi-class: get max score and predicted class
+        scores, pred_classes = out_logits.sigmoid().max(dim=-1)
 
         # convert to [x0, y0, x1, y1] format
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
@@ -355,7 +389,7 @@ class TrackerPostProcess(nn.Module):
 
         track_instances.boxes = boxes
         track_instances.scores = scores
-        track_instances.labels = torch.full_like(scores, 0)
+        track_instances.labels = pred_classes  # Use predicted class instead of always 0
         # track_instances.remove('pred_logits')
         # track_instances.remove('pred_boxes')
         return track_instances
@@ -464,8 +498,10 @@ class MOTR(nn.Module):
             track_instances.ref_pts = self.position.weight
             track_instances.query_pos = self.query_embed.weight
         else:
+            # Proposals format: [cx, cy, w, h, score, class] (6 dimensions)
             track_instances.ref_pts = torch.cat([self.position.weight, proposals[:, :4]])
-            track_instances.query_pos = torch.cat([self.query_embed.weight, pos2posemb(proposals[:, 4:], d_model) + self.yolox_embed.weight])
+            # Encode both score and class information into query positional embedding
+            track_instances.query_pos = torch.cat([self.query_embed.weight, pos2posemb(proposals[:, 4:6], d_model) + self.yolox_embed.weight])
         track_instances.output_embedding = torch.zeros((len(track_instances), d_model), device=device)
         track_instances.obj_idxes = torch.full((len(track_instances),), -1, dtype=torch.long, device=device)
         track_instances.matched_gt_idxes = torch.full((len(track_instances),), -1, dtype=torch.long, device=device)
@@ -583,12 +619,11 @@ class MOTR(nn.Module):
             frame_res['ps_outputs'] = ps_outputs
 
         with torch.no_grad():
-            if self.training:
-                track_scores = frame_res['pred_logits'][0, :].sigmoid().max(dim=-1).values
-            else:
-                track_scores = frame_res['pred_logits'][0, :, 0].sigmoid()
-
-        track_instances.scores = track_scores
+            # Multi-class: get max score and predicted class across all classes
+            pred_logits_sigmoid = frame_res['pred_logits'][0, :].sigmoid()
+            track_scores, pred_classes = pred_logits_sigmoid.max(dim=-1)
+            track_instances.pred_classes = pred_classes
+            track_instances.scores = track_scores
         track_instances.pred_logits = frame_res['pred_logits'][0]
         track_instances.pred_boxes = frame_res['pred_boxes'][0]
         track_instances.output_embedding = frame_res['hs'][0]
@@ -711,7 +746,7 @@ def build(args):
         'coco': 91,
         'coco_panoptic': 250,
         'e2e_mot': 1,
-        'e2e_dance': 1,
+        'e2e_dance': 2,  # Changed from 1 to 2: class 0=person, class 1=ball
         'e2e_joint': 1,
         'e2e_static_mot': 1,
     }

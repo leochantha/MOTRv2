@@ -184,9 +184,19 @@ class DetMOTDetection:
             targets['scores'].append(1.)
         txt_key = os.path.join(vid, 'img1', f'{idx:08d}.txt')
         for line in self.det_db[txt_key]:
-            *box, s = map(float, line.split(','))
+            parts = list(map(float, line.split(',')))
+            if len(parts) == 5:  # Old format: x, y, w, h, score (default to person)
+                *box, s = parts
+                class_id = 0  # Default to person
+            elif len(parts) == 6:  # New format: x, y, w, h, score, class
+                *box, s, class_id = parts
+            else:
+                continue  # Skip malformed lines
             targets['boxes'].append(box)
             targets['scores'].append(s)
+            targets['labels'].append(int(class_id))
+            targets['iscrowd'].append(False)  # Detections are not crowd
+            targets['obj_ids'].append(-1)  # Detections don't have track IDs yet
 
         targets['iscrowd'] = torch.as_tensor(targets['iscrowd'])
         targets['labels'] = torch.as_tensor(targets['labels'])
@@ -231,9 +241,11 @@ class DetMOTDetection:
             gt_instances_i = self._targets_to_instances(targets_i, img_i.shape[1:3])
             gt_instances.append(gt_instances_i)
             n_gt = len(targets_i['labels'])
+            # Proposals now include: [boxes (4), score (1), class (1)] = 6 dimensions
             proposals.append(torch.cat([
-                targets_i['boxes'][n_gt:],
-                targets_i['scores'][n_gt:, None],
+                targets_i['boxes'][n_gt:],           # Detection boxes [N, 4]
+                targets_i['scores'][n_gt:, None],    # Detection scores [N, 1]
+                targets_i['labels'][n_gt:, None].float(),  # Detection classes [N, 1]
             ], dim=1))
         return {
             'imgs': images,
