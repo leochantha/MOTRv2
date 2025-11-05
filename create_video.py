@@ -560,7 +560,7 @@ if __name__ == "__main__":
                 "D-FINE only",
                 "YOLOX only"
             ],
-            output_video="tracking_comparison_det_only.mp4",  # Output filename
+            output_video="tracking_comparison.mp4",  # Output filename
             fps=30,
             grid_layout=(2, 2),  # 2x2 grid for 4 models
             show_confidence=True

@@ -20,3 +20,5 @@
 --append_crowd
 --det_db det_db_motrv2_dfine_0.8.json
 --use_checkpoint
+--score_threshold 0.5
+--miss_tolerance 5
