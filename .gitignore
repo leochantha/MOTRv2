@@ -8,4 +8,5 @@ build/
 *.mp4
 data/
 tracker/
+runs/*
 motrv2.zip

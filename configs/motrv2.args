@@ -16,9 +16,11 @@
 --fp_ratio 0.3
 --query_interaction_layer QIMv2
 --query_denoise 0.05
---num_queries 10
 --append_crowd
---det_db det_db_motrv2_dfine_0.8.json
+--det_db det_db_motrv2_Volleyball_only.json
 --use_checkpoint
---score_threshold 0.5
---miss_tolerance 5
+--num_queries 10
+--score_threshold 0.35
+--update_score_threshold 0.35
+--miss_tolerance 20
+--area_threshold 15

@@ -107,7 +107,7 @@ class Detector(object):
         keep = areas > area_threshold
         return dt_instances[keep]
 
-    def detect(self, prob_threshold=0.6, area_threshold=100, vis=False):
+    def detect(self, prob_threshold=0.5, area_threshold=25, vis=False):
         total_dts = 0
         total_occlusion_dts = 0
 
@@ -147,7 +147,7 @@ class Detector(object):
                 x1, y1, x2, y2 = xyxy
                 w, h = x2 - x1, y2 - y1
                 lines.append(save_format.format(frame=i + 1, id=track_id, x1=x1, y1=y1, w=w, h=h))
-        with open(os.path.join(self.predict_path, f'{self.seq_num}.txt'), 'w') as f:
+        with open(os.path.join(self.predict_path, f'{self.seq_num}_nqueries{self.args.num_queries}_prob{prob_threshold}_area{area_threshold}.txt'), 'w') as f:
             f.writelines(lines)
         print("totally {} dts {} occlusion dts".format(total_dts, total_occlusion_dts))
 
@@ -183,6 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('--score_threshold', default=0.5, type=float)
     parser.add_argument('--update_score_threshold', default=0.5, type=float)
     parser.add_argument('--miss_tolerance', default=20, type=int)
+    parser.add_argument('--area_threshold', default=25, type=int)
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -210,4 +211,4 @@ if __name__ == '__main__':
 
     for vid in vids:
         det = Detector(args, model=detr, vid=vid)
-        det.detect(args.score_threshold)
+        det.detect(args.score_threshold, args.area_threshold)
