@@ -10,3 +10,4 @@ data/
 tracker/
 runs/*
 motrv2.zip
+datasets/dance2.py
