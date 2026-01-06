@@ -1,0 +1,7 @@
+# Volleyball training sequences
+# List one video/match directory name per line
+# These should match folder names in {mot_path}/train/
+# Example:
+# match_001
+# match_002
+# game_semifinal_1
