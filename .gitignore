@@ -11,3 +11,4 @@ tracker/
 runs/*
 motrv2.zip
 datasets/dance2.py
+run_volleyball_combined_finetune.slurm
