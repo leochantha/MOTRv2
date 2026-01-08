@@ -11,6 +11,10 @@
 """
 Volleyball dataset for MOTRv2 training.
 Supports tracking players in volleyball matches.
+
+Supports two data formats:
+1. MOT-style: gt/gt.txt files with frame_id, track_id, x, y, w, h, mark, label
+2. JSON-style: Single JSON file with frame paths as keys and detection lists as values
 """
 from collections import defaultdict
 import json
@@ -33,7 +37,10 @@ class DetVolleyballDetection:
     """
     Volleyball dataset for multi-object tracking.
 
-    Expected data structure:
+    Supports two annotation formats:
+
+    FORMAT 1 - MOT-style (recommended for tracking):
+    ================================================
     {mot_path}/
     ├── train/
     │   ├── match1/
@@ -41,29 +48,26 @@ class DetVolleyballDetection:
     │   │   │   ├── 00000001.jpg
     │   │   │   └── ...
     │   │   └── gt/
-    │   │       └── gt.txt
-    │   └── match2/
-    │       └── ...
-    └── val/
-        └── ...
+    │   │       └── gt.txt  (frame_id, track_id, x, y, w, h, mark, label)
+    │   └── ...
 
-    Ground truth format (gt.txt):
-    frame_id, track_id, x, y, w, h, mark, label
-    - frame_id: 1-indexed frame number
-    - track_id: unique ID for each player
-    - x, y, w, h: bounding box (top-left corner + width/height)
-    - mark: 1 = valid, 0 = ignore
-    - label: object class (1 = player, can extend for ball, referee, etc.)
+    FORMAT 2 - JSON-style (your format):
+    =====================================
+    Single JSON file (specified via --gt_json) with structure:
+    {
+        "volleyball/combined/gt/img1/000001": [
+            "x,y,w,h,score\\n",
+            ...
+        ],
+        ...
+    }
 
-    Label mapping:
-    - 1: Player
-    - 2: Ball (optional)
-    - 3: Referee (optional)
+    For JSON format, you also need --gt_json_has_track_ids=True if your format includes track IDs:
+        "track_id,x,y,w,h,score\\n"
+
+    Without track IDs, the dataset will generate pseudo-IDs per frame (NOT suitable for tracking training,
+    but can be used with detection proposals for inference).
     """
-
-    # Class labels for volleyball
-    VALID_LABELS = [1, 2, 3]  # Player, Ball, Referee
-    LABEL_NAMES = {1: 'player', 2: 'ball', 3: 'referee'}
 
     def __init__(self, args, data_txt_path: str, seqs_folder, transform):
         self.args = args
@@ -75,6 +79,141 @@ class DetVolleyballDetection:
         self.mot_path = args.mot_path
 
         self.labels_full = defaultdict(lambda: defaultdict(list))
+        self.frame_paths = {}  # Maps (vid, frame_idx) -> image path
+
+        # Check which format to use
+        gt_json_path = getattr(args, 'gt_json', None)
+        if gt_json_path:
+            self._load_json_format(gt_json_path, args)
+        else:
+            self._load_mot_format()
+
+        vid_files = list(self.labels_full.keys())
+
+        self.indices = []
+        self.vid_tmax = {}
+        for vid in vid_files:
+            self.video_dict[vid] = len(self.video_dict)
+            if not self.labels_full[vid]:
+                continue
+            t_min = min(self.labels_full[vid].keys())
+            t_max = max(self.labels_full[vid].keys()) + 1
+            self.vid_tmax[vid] = t_max - 1
+            for t in range(t_min, t_max - self.num_frames_per_batch):
+                self.indices.append((vid, t))
+
+        print(f"Found {len(vid_files)} volleyball videos, {len(self.indices)} valid frames")
+
+        self.sampler_steps: list = args.sampler_steps
+        self.lengths: list = args.sampler_lengths
+        print(f"sampler_steps={self.sampler_steps} lengths={self.lengths}")
+        self.period_idx = 0
+
+        # Load detection database if provided (for proposals)
+        if args.det_db:
+            det_db_path = os.path.join(args.mot_path, args.det_db)
+            if os.path.exists(det_db_path):
+                with open(det_db_path) as f:
+                    self.det_db = json.load(f)
+                print(f"Loaded detection database from {det_db_path}")
+            else:
+                print(f"Warning: Detection database {det_db_path} not found, using empty")
+                self.det_db = defaultdict(list)
+        else:
+            self.det_db = defaultdict(list)
+
+    def _load_json_format(self, gt_json_path, args):
+        """
+        Load annotations from JSON format.
+
+        Expected JSON structure:
+        {
+            "volleyball/combined/gt/img1/000001": [
+                "x,y,w,h,score\\n",  # without track_id
+                OR
+                "track_id,x,y,w,h,score\\n",  # with track_id
+                ...
+            ],
+            ...
+        }
+        """
+        full_path = os.path.join(self.mot_path, gt_json_path)
+        if not os.path.exists(full_path):
+            # Try as absolute path
+            full_path = gt_json_path
+
+        print(f"Loading JSON annotations from: {full_path}")
+
+        with open(full_path) as f:
+            gt_data = json.load(f)
+
+        has_track_ids = getattr(args, 'gt_json_has_track_ids', False)
+        print(f"JSON format has track IDs: {has_track_ids}")
+
+        if not has_track_ids:
+            print("WARNING: JSON format without track IDs. Generating pseudo-IDs.")
+            print("         This is NOT recommended for tracking training!")
+            print("         Consider adding track IDs to your annotations.")
+
+        # Parse JSON keys to extract video and frame info
+        # Key format: "volleyball/combined/gt/img1/000001"
+        for key, detections in gt_data.items():
+            # Parse the key to get video path and frame number
+            parts = key.split('/')
+            # Find 'img1' in path and extract frame number
+            try:
+                img1_idx = parts.index('img1')
+                vid_path = '/'.join(parts[:img1_idx])  # e.g., "volleyball/combined/gt"
+                frame_str = parts[img1_idx + 1]  # e.g., "000001"
+                frame_idx = int(frame_str)
+            except (ValueError, IndexError):
+                # Alternative parsing: assume last part is frame number
+                vid_path = '/'.join(parts[:-1])
+                frame_str = parts[-1]
+                frame_idx = int(frame_str)
+
+            # Store image path for this frame
+            # Assuming images are at: {mot_path}/{vid_path}/img1/{frame:06d}.jpg
+            img_key = (vid_path, frame_idx)
+            self.frame_paths[img_key] = key
+
+            # Parse detections
+            for det_idx, det_str in enumerate(detections):
+                det_str = det_str.strip()
+                if not det_str:
+                    continue
+
+                parts = det_str.split(',')
+
+                if has_track_ids:
+                    # Format: track_id, x, y, w, h, score
+                    if len(parts) >= 6:
+                        track_id = int(float(parts[0]))
+                        x, y, w, h = map(float, parts[1:5])
+                        score = float(parts[5]) if len(parts) > 5 else 1.0
+                    else:
+                        continue
+                else:
+                    # Format: x, y, w, h, score (no track_id)
+                    if len(parts) >= 5:
+                        x, y, w, h, score = map(float, parts[:5])
+                        # Generate pseudo track ID (unique per detection per frame)
+                        # This won't provide cross-frame association!
+                        track_id = det_idx + 1
+                    elif len(parts) >= 4:
+                        x, y, w, h = map(float, parts[:4])
+                        score = 1.0
+                        track_id = det_idx + 1
+                    else:
+                        continue
+
+                # Store: x, y, w, h, track_id, is_crowd, score
+                self.labels_full[vid_path][frame_idx].append([x, y, w, h, track_id, False, score])
+
+        print(f"Loaded {len(gt_data)} frames from JSON")
+
+    def _load_mot_format(self):
+        """Load annotations from MOT-style gt.txt files."""
 
         def add_volleyball_folder(split_dir):
             """Load annotations from a volleyball dataset split directory."""
@@ -97,58 +236,26 @@ class DetVolleyballDetection:
 
                 for l in open(gt_path):
                     parts = l.strip().split(',')
-                    if len(parts) < 8:
+                    if len(parts) < 6:
                         continue
 
-                    t, i, *xywh, mark, label = parts[:8]
-                    t, i, mark, label = map(int, (t, i, mark, label))
-
-                    # Skip ignored annotations
-                    if mark == 0:
-                        continue
-
-                    # Filter by valid labels (default: keep all valid volleyball labels)
-                    if label not in self.VALID_LABELS:
-                        continue
+                    # Support both 8-column and 6-column formats
+                    if len(parts) >= 8:
+                        t, i, *xywh, mark, label = parts[:8]
+                        t, i, mark, label = map(int, (t, i, mark, label))
+                        if mark == 0:
+                            continue
+                    else:
+                        # 6-column format: frame_id, track_id, x, y, w, h
+                        t, i = int(parts[0]), int(parts[1])
+                        xywh = parts[2:6]
 
                     x, y, w, h = map(float, xywh)
-                    # Store: x, y, w, h, track_id, is_crowd
-                    self.labels_full[vid_path][t].append([x, y, w, h, i, False])
+                    # Store: x, y, w, h, track_id, is_crowd, score
+                    self.labels_full[vid_path][t].append([x, y, w, h, i, False, 1.0])
 
         # Load training data
         add_volleyball_folder("train")
-
-        vid_files = list(self.labels_full.keys())
-
-        self.indices = []
-        self.vid_tmax = {}
-        for vid in vid_files:
-            self.video_dict[vid] = len(self.video_dict)
-            t_min = min(self.labels_full[vid].keys())
-            t_max = max(self.labels_full[vid].keys()) + 1
-            self.vid_tmax[vid] = t_max - 1
-            for t in range(t_min, t_max - self.num_frames_per_batch):
-                self.indices.append((vid, t))
-
-        print(f"Found {len(vid_files)} volleyball videos, {len(self.indices)} valid frames")
-
-        self.sampler_steps: list = args.sampler_steps
-        self.lengths: list = args.sampler_lengths
-        print(f"sampler_steps={self.sampler_steps} lengths={self.lengths}")
-        self.period_idx = 0
-
-        # Load detection database if provided (from external detector like YOLOX)
-        if args.det_db:
-            det_db_path = os.path.join(args.mot_path, args.det_db)
-            if os.path.exists(det_db_path):
-                with open(det_db_path) as f:
-                    self.det_db = json.load(f)
-                print(f"Loaded detection database from {det_db_path}")
-            else:
-                print(f"Warning: Detection database {det_db_path} not found, using empty")
-                self.det_db = defaultdict(list)
-        else:
-            self.det_db = defaultdict(list)
 
     def set_epoch(self, epoch):
         """Update sampling parameters based on current epoch."""
@@ -177,17 +284,48 @@ class DetVolleyballDetection:
         gt_instances.obj_ids = targets['obj_ids']
         return gt_instances
 
+    def _get_image_path(self, vid, idx):
+        """Get image path for a given video and frame index."""
+        # Check if we have a stored path from JSON format
+        img_key = (vid, idx)
+        if img_key in self.frame_paths:
+            # JSON format - reconstruct image path
+            # The JSON key might be gt path, we need to find the actual image
+            json_key = self.frame_paths[img_key]
+            # Try common image locations
+            possible_paths = [
+                os.path.join(self.mot_path, vid, 'img1', f'{idx:06d}.jpg'),
+                os.path.join(self.mot_path, vid, 'img1', f'{idx:08d}.jpg'),
+                os.path.join(self.mot_path, vid.replace('/gt', ''), 'img1', f'{idx:06d}.jpg'),
+                os.path.join(self.mot_path, vid.replace('/gt', ''), f'{idx:06d}.jpg'),
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    return path
+
+        # Standard MOT format path
+        img_path = os.path.join(self.mot_path, vid, 'img1', f'{idx:08d}.jpg')
+        if os.path.exists(img_path):
+            return img_path
+
+        # Try 6-digit format
+        img_path = os.path.join(self.mot_path, vid, 'img1', f'{idx:06d}.jpg')
+        if os.path.exists(img_path):
+            return img_path
+
+        # Try alternative extensions
+        for digits in [8, 6]:
+            for ext in ['.jpg', '.png', '.jpeg', '.JPG', '.PNG', '.JPEG']:
+                img_path = os.path.join(self.mot_path, vid, 'img1', f'{idx:0{digits}d}{ext}')
+                if os.path.exists(img_path):
+                    return img_path
+
+        # Fallback
+        return os.path.join(self.mot_path, vid, 'img1', f'{idx:08d}.jpg')
+
     def _pre_single_frame(self, vid, idx: int):
         """Load and preprocess a single frame."""
-        img_path = os.path.join(self.mot_path, vid, 'img1', f'{idx:08d}.jpg')
-
-        # Try alternative image formats if jpg doesn't exist
-        if not os.path.exists(img_path):
-            for ext in ['.png', '.jpeg', '.PNG', '.JPG', '.JPEG']:
-                alt_path = img_path.replace('.jpg', ext)
-                if os.path.exists(alt_path):
-                    img_path = alt_path
-                    break
+        img_path = self._get_image_path(vid, idx)
 
         img = Image.open(img_path)
         targets = {}
@@ -208,19 +346,32 @@ class DetVolleyballDetection:
         targets['orig_size'] = torch.as_tensor([h, w])
 
         # Load ground truth annotations
-        for *xywh, track_id, crowd in self.labels_full[vid][idx]:
-            targets['boxes'].append(xywh)
+        for ann in self.labels_full[vid][idx]:
+            if len(ann) >= 7:
+                x, y, w_box, h_box, track_id, crowd, score = ann[:7]
+            elif len(ann) >= 6:
+                x, y, w_box, h_box, track_id, crowd = ann[:6]
+                score = 1.0
+            else:
+                continue
+
+            targets['boxes'].append([x, y, w_box, h_box])
             targets['iscrowd'].append(crowd)
             targets['labels'].append(0)  # All objects mapped to class 0 for tracking
             targets['obj_ids'].append(track_id + obj_idx_offset)
-            targets['scores'].append(1.0)
+            targets['scores'].append(score)
 
         # Load detection proposals if available
         txt_key = os.path.join(vid, 'img1', f'{idx:08d}.txt')
         for line in self.det_db.get(txt_key, []):
-            *box, s = map(float, line.split(','))
-            targets['boxes'].append(box)
-            targets['scores'].append(s)
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if len(parts) >= 5:
+                *box, s = map(float, parts[:5])
+                targets['boxes'].append(box)
+                targets['scores'].append(s)
 
         targets['iscrowd'] = torch.as_tensor(targets['iscrowd'])
         targets['labels'] = torch.as_tensor(targets['labels'])
@@ -229,7 +380,8 @@ class DetVolleyballDetection:
         targets['boxes'] = torch.as_tensor(targets['boxes'], dtype=torch.float32).reshape(-1, 4)
 
         # Convert from xywh to xyxy format
-        targets['boxes'][:, 2:] += targets['boxes'][:, :2]
+        if targets['boxes'].numel() > 0:
+            targets['boxes'][:, 2:] += targets['boxes'][:, :2]
 
         return img, targets
 
@@ -358,6 +510,9 @@ def build(image_set, args):
     Args:
         image_set: 'train' or 'val'
         args: Training arguments
+            - mot_path: Base path to dataset
+            - gt_json: (optional) Path to JSON annotation file
+            - gt_json_has_track_ids: (optional) Whether JSON has track IDs
 
     Returns:
         DetVolleyballDetection dataset instance
