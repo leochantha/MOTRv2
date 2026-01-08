@@ -149,6 +149,10 @@ def get_args_parser():
     # end-to-end mot settings.
     parser.add_argument('--mot_path', default='./data/Dataset/mot', type=str)
     parser.add_argument('--det_db', default='', type=str)
+    parser.add_argument('--gt_json', default='', type=str,
+                        help="Path to JSON ground truth file (alternative to MOT-style gt.txt)")
+    parser.add_argument('--gt_json_has_track_ids', default=False, action='store_true',
+                        help="Whether JSON GT format includes track IDs (track_id,x,y,w,h,score)")
     parser.add_argument('--input_video', default='figs/demo.mp4', type=str)
     parser.add_argument('--data_txt_path_train',
                         default='./datasets/data_path/detmot17.train', type=str,
