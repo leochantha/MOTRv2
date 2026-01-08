@@ -23,5 +23,3 @@
 --data_txt_path_val ./datasets/data_path/volleyball.val
 --output_dir ./exps/motrv2_volleyball
 --use_checkpoint
---score_threshold 0.5
---miss_tolerance 5
