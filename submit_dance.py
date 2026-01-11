@@ -146,7 +146,7 @@ class Detector(object):
         keep = areas > area_threshold
         return dt_instances[keep]
 
-    def detect(self, prob_threshold=0.6, area_threshold=100, vis=False):
+    def detect(self, prob_threshold=0.5, area_threshold=25, vis=False):
         start_time = time.time()
         total_dts = 0
         total_occlusion_dts = 0
@@ -325,8 +325,8 @@ if __name__ == '__main__':
     parser.add_argument('--score_threshold', default=0.5, type=float)
     parser.add_argument('--update_score_threshold', default=0.5, type=float)
     parser.add_argument('--miss_tolerance', default=20, type=int)
-    parser.add_argument('--area_threshold', default=100, type=float,
-                       help='Minimum detection area in pixels (default: 100)')
+    parser.add_argument('--area_threshold', default=25, type=float,
+                       help='Minimum detection area in pixels (default: 25)')
     parser.add_argument('--sub_dir', default='volleyball/test', type=str,
                        help='Subdirectory containing test sequences (default: volleyball/test)')
     args = parser.parse_args()
