@@ -505,14 +505,174 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
     print(f"Total frames processed: {processed_frames}")
     print(f"Models compared: {', '.join(model_names)}")
 
+def auto_name_from_path(path):
+    """Generate a readable model name from file path."""
+    from pathlib import Path
+    p = Path(path)
+
+    # For tracking results: tracker/test1_YOLOX.txt -> YOLOX
+    if p.suffix == '.txt':
+        name = p.stem
+        # Try to extract model name from filename
+        parts = name.split('_')
+        if len(parts) > 1:
+            return parts[-1]  # Last part after underscore
+        return name
+
+    # For JSON: det_db_motrv2_DFINE.json -> DFINE
+    if p.suffix == '.json':
+        name = p.stem
+        for prefix in ['det_db_motrv2_', 'det_db_', 'detections_']:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        return name
+
+    return p.stem
+
+
+def find_tracking_files(search_dirs=None, pattern="*.txt"):
+    """Auto-discover tracking result files."""
+    from pathlib import Path
+
+    if search_dirs is None:
+        search_dirs = ['./tracker', './results', './exps', '.']
+
+    results = []
+    for search_dir in search_dirs:
+        search_path = Path(search_dir)
+        if not search_path.exists():
+            continue
+
+        for f in search_path.rglob(pattern):
+            # Skip non-tracking files
+            if f.name in ['config.txt', 'git_status', 'git_diff', 'desc', 'output.log']:
+                continue
+            # Skip if file is too small (likely not tracking data)
+            if f.stat().st_size < 100:
+                continue
+            results.append(str(f))
+
+    return sorted(set(results))
+
+
+def interactive_mode(frames_dir=None):
+    """Interactive mode for easy visualization."""
+    print("\n" + "="*60)
+    print("  MOTRv2 Tracking Visualization - Interactive Mode")
+    print("="*60 + "\n")
+
+    # Step 1: Find frames directory
+    if frames_dir is None:
+        print("Enter path to frames directory (containing .jpg images):")
+        frames_dir = input("> ").strip()
+
+    if not os.path.exists(frames_dir):
+        print(f"Error: Directory not found: {frames_dir}")
+        return
+
+    # Step 2: Auto-discover tracking files
+    print("\nSearching for tracking results...")
+    tracking_files = find_tracking_files()
+
+    # Also search for JSON files
+    json_files = find_tracking_files(pattern="*.json")
+    tracking_files.extend(json_files)
+    tracking_files = sorted(set(tracking_files))
+
+    if not tracking_files:
+        print("No tracking files found. Please specify paths manually.")
+        print("Enter tracking file paths (comma-separated):")
+        paths = input("> ").strip()
+        tracking_files = [p.strip() for p in paths.split(',')]
+    else:
+        print(f"\nFound {len(tracking_files)} tracking files:")
+        for i, f in enumerate(tracking_files):
+            auto_name = auto_name_from_path(f)
+            print(f"  [{i+1}] {f}")
+            print(f"       -> Auto-name: {auto_name}")
+
+        print("\nEnter file numbers to compare (comma-separated), or 'all':")
+        selection = input("> ").strip()
+
+        if selection.lower() == 'all':
+            pass  # Keep all files
+        else:
+            try:
+                indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                tracking_files = [tracking_files[i] for i in indices]
+            except (ValueError, IndexError) as e:
+                print(f"Invalid selection: {e}")
+                return
+
+    # Step 3: Generate names
+    model_names = [auto_name_from_path(f) for f in tracking_files]
+
+    print("\nAuto-generated names:")
+    for f, name in zip(tracking_files, model_names):
+        print(f"  {os.path.basename(f)} -> {name}")
+
+    print("\nPress Enter to accept, or enter custom names (comma-separated):")
+    custom = input("> ").strip()
+    if custom:
+        model_names = [n.strip() for n in custom.split(',')]
+
+    # Step 4: Output path
+    print("\nEnter output video path (default: tracking_comparison.mp4):")
+    output_video = input("> ").strip() or "tracking_comparison.mp4"
+
+    # Step 5: Create video
+    print("\n" + "-"*60)
+    print("Creating comparison video...")
+    print("-"*60 + "\n")
+
+    create_comparison_video(
+        frames_dir=frames_dir,
+        tracking_files=tracking_files,
+        model_names=model_names,
+        output_video=output_video,
+        fps=30,
+        show_ids=True,
+        show_confidence=False
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Create tracking comparison video with multiple models')
-    parser.add_argument('frames_dir', help='Directory containing frame images')
-    parser.add_argument('output_video', help='Output video file path')
-    parser.add_argument('--tracking-files', nargs='+', required=True, 
+    parser = argparse.ArgumentParser(
+        description='Create tracking comparison video with multiple models',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Interactive mode (guided setup)
+  python create_video.py --interactive
+
+  # Quick mode with auto-discovery
+  python create_video.py frames_dir output.mp4 --auto
+
+  # Standard mode
+  python create_video.py frames_dir output.mp4 \\
+      --tracking-files tracker/a.txt tracker/b.txt \\
+      --model-names "Model A" "Model B"
+        """
+    )
+
+    # Positional arguments (optional in interactive/auto mode)
+    parser.add_argument('frames_dir', nargs='?', help='Directory containing frame images')
+    parser.add_argument('output_video', nargs='?', default='tracking_comparison.mp4',
+                       help='Output video file path (default: tracking_comparison.mp4)')
+
+    # Mode selection
+    parser.add_argument('--interactive', '-i', action='store_true',
+                       help='Interactive mode with guided setup')
+    parser.add_argument('--auto', '-a', action='store_true',
+                       help='Auto-discover tracking files and generate names')
+
+    # Tracking files
+    parser.add_argument('--tracking-files', '-t', nargs='+',
                        help='List of tracking data files')
-    parser.add_argument('--model-names', nargs='+', required=True,
-                       help='List of model names (must match number of tracking files)')
+    parser.add_argument('--model-names', '-n', nargs='+',
+                       help='List of model names (auto-generated if not provided with --auto)')
+
+    # Video options
     parser.add_argument('--fps', type=int, default=30, help='Frames per second (default: 30)')
     parser.add_argument('--no-ids', action='store_true', help='Hide object IDs')
     parser.add_argument('--show-confidence', action='store_true', help='Show confidence scores')
@@ -520,15 +680,71 @@ def main():
     parser.add_argument('--frame-pattern', help='Custom frame naming pattern (e.g., "{:06d}.jpg")')
     parser.add_argument('--grid-layout', nargs=2, type=int, metavar=('ROWS', 'COLS'),
                        help='Custom grid layout (rows cols)')
-    
+
+    # Search options
+    parser.add_argument('--search-dirs', nargs='+', default=['./tracker', './results', './exps'],
+                       help='Directories to search for tracking files (with --auto)')
+
     args = parser.parse_args()
-    
+
+    # Interactive mode
+    if args.interactive:
+        interactive_mode(args.frames_dir)
+        return
+
+    # Auto mode
+    if args.auto:
+        if not args.frames_dir:
+            parser.error("frames_dir required with --auto mode")
+
+        print("Auto-discovering tracking files...")
+        tracking_files = find_tracking_files(args.search_dirs)
+        tracking_files.extend(find_tracking_files(args.search_dirs, "*.json"))
+        tracking_files = sorted(set(tracking_files))
+
+        if not tracking_files:
+            print("No tracking files found. Use --tracking-files to specify manually.")
+            return
+
+        print(f"Found {len(tracking_files)} files:")
+        for f in tracking_files:
+            print(f"  {f}")
+
+        model_names = [auto_name_from_path(f) for f in tracking_files]
+
+        create_comparison_video(
+            frames_dir=args.frames_dir,
+            tracking_files=tracking_files,
+            model_names=model_names,
+            output_video=args.output_video,
+            fps=args.fps,
+            show_ids=not args.no_ids,
+            show_confidence=args.show_confidence,
+            frame_format=args.frame_format,
+            frame_name_pattern=args.frame_pattern,
+            grid_layout=tuple(args.grid_layout) if args.grid_layout else None
+        )
+        return
+
+    # Standard mode - require tracking files
+    if not args.tracking_files:
+        parser.error("--tracking-files required (or use --auto or --interactive)")
+
+    # Auto-generate names if not provided
+    model_names = args.model_names
+    if not model_names:
+        model_names = [auto_name_from_path(f) for f in args.tracking_files]
+        print(f"Auto-generated model names: {model_names}")
+
+    if len(model_names) != len(args.tracking_files):
+        parser.error("Number of model names must match number of tracking files")
+
     grid_layout = tuple(args.grid_layout) if args.grid_layout else None
-    
+
     create_comparison_video(
         frames_dir=args.frames_dir,
         tracking_files=args.tracking_files,
-        model_names=args.model_names,
+        model_names=model_names,
         output_video=args.output_video,
         fps=args.fps,
         show_ids=not args.no_ids,
@@ -538,30 +754,10 @@ def main():
         grid_layout=grid_layout
     )
 
+
 if __name__ == "__main__":
-    # Option 1: Use command line arguments
     if len(sys.argv) > 1:
         main()
     else:
-        # Option 2: Direct execution with hardcoded paths
-        # Uncomment and modify the paths below:
-        
-        create_comparison_video(
-            frames_dir="data/Dataset/mot/volleyball/test/test1/img1",  # Replace with your frames directory
-            tracking_files=[
-                "tracker/test1.txt",
-                "tracker/test1_YOLOX.txt", 
-                "data/Dataset/mot/det_db_motrv2_DFINE.json",
-                "data/Dataset/mot/det_db_motrv2_YOLOX.json"
-            ],
-                model_names=[
-                "D-FINE+MOTRv2",
-                "YOLOX+MOTRv2", 
-                "D-FINE only",
-                "YOLOX only"
-            ],
-            output_video="tracking_comparison.mp4",  # Output filename
-            fps=30,
-            grid_layout=(2, 2),  # 2x2 grid for 4 models
-            show_confidence=True
-        )
+        # No arguments - run interactive mode
+        interactive_mode()
