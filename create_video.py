@@ -505,14 +505,435 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
     print(f"Total frames processed: {processed_frames}")
     print(f"Models compared: {', '.join(model_names)}")
 
+def load_submit_metadata(submit_dir):
+    """Load inference metadata from a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder (e.g., exps/exp_name/submit_1)
+
+    Returns:
+        Dictionary with metadata or None if not found
+    """
+    metadata_file = os.path.join(submit_dir, 'inference_metadata.json')
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            return json.load(f)
+    return None
+
+
+def find_submit_folders(exp_dir):
+    """Find all submit folders in an experiment directory.
+
+    Args:
+        exp_dir: Path to experiment directory (e.g., exps/motrv2_volleyball)
+
+    Returns:
+        List of (submit_dir, submit_num, metadata) tuples, sorted by submit number
+    """
+    import re
+    from pathlib import Path
+
+    results = []
+    exp_path = Path(exp_dir)
+
+    if not exp_path.exists():
+        return results
+
+    for item in exp_path.iterdir():
+        if item.is_dir():
+            match = re.match(r'submit_(\d+)$', item.name)
+            if match:
+                submit_num = int(match.group(1))
+                metadata = load_submit_metadata(str(item))
+                results.append((str(item), submit_num, metadata))
+
+    # Sort by submit number
+    results.sort(key=lambda x: x[1])
+    return results
+
+
+def generate_header_from_metadata(metadata, submit_num):
+    """Generate a descriptive header string from metadata.
+
+    Args:
+        metadata: Dictionary from inference_metadata.json
+        submit_num: Submit folder number
+
+    Returns:
+        Header string for video overlay
+    """
+    if metadata is None:
+        return f"Submit {submit_num}"
+
+    params = metadata.get('parameters', {})
+    summary = metadata.get('summary', {})
+
+    # Extract key parameters
+    score_thr = params.get('score_threshold', '?')
+    miss_tol = params.get('miss_tolerance', '?')
+
+    # Get checkpoint name (just the filename)
+    checkpoint = params.get('checkpoint', '')
+    if checkpoint:
+        checkpoint = os.path.basename(checkpoint)
+        # Shorten if too long
+        if len(checkpoint) > 30:
+            checkpoint = checkpoint[:27] + '...'
+
+    # Build header
+    header_parts = [f"Submit {submit_num}"]
+    header_parts.append(f"score={score_thr}")
+    header_parts.append(f"miss={miss_tol}")
+
+    return " | ".join(header_parts)
+
+
+def generate_detailed_header(metadata, submit_num):
+    """Generate a multi-line detailed header from metadata.
+
+    Args:
+        metadata: Dictionary from inference_metadata.json
+        submit_num: Submit folder number
+
+    Returns:
+        List of header lines for video overlay
+    """
+    if metadata is None:
+        return [f"Submit {submit_num}"]
+
+    params = metadata.get('parameters', {})
+    summary = metadata.get('summary', {})
+
+    lines = [f"Submit {submit_num}"]
+
+    # Parameters line
+    score_thr = params.get('score_threshold', '?')
+    miss_tol = params.get('miss_tolerance', '?')
+    lines.append(f"score={score_thr} miss={miss_tol}")
+
+    # Stats line (if available)
+    if summary:
+        tracks = summary.get('total_unique_tracks', '?')
+        fps = summary.get('overall_fps', '?')
+        lines.append(f"tracks={tracks} fps={fps}")
+
+    return lines
+
+
+def find_sequence_in_submit(submit_dir, sequence_name):
+    """Find tracking file for a sequence in a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder
+        sequence_name: Name of sequence (e.g., 'test1')
+
+    Returns:
+        Path to tracking file or None
+    """
+    # Try exact match
+    tracking_file = os.path.join(submit_dir, f"{sequence_name}.txt")
+    if os.path.exists(tracking_file):
+        return tracking_file
+
+    # Try with different extensions/patterns
+    for pattern in [f"{sequence_name}*.txt", f"*{sequence_name}*.txt"]:
+        matches = glob.glob(os.path.join(submit_dir, pattern))
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def list_sequences_in_submit(submit_dir):
+    """List all available sequences in a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder
+
+    Returns:
+        List of sequence names
+    """
+    sequences = []
+    for f in glob.glob(os.path.join(submit_dir, "*.txt")):
+        name = os.path.basename(f)
+        if name != 'inference_metadata.json':
+            sequences.append(os.path.splitext(name)[0])
+    return sorted(sequences)
+
+
+def visualize_from_exp_dir(exp_dir, sequence_name, frames_dir, output_video,
+                           submit_nums=None, fps=30, show_ids=True,
+                           show_confidence=False, detailed_headers=False):
+    """Create comparison video from experiment output directory.
+
+    Args:
+        exp_dir: Path to experiment directory (e.g., exps/motrv2_volleyball)
+        sequence_name: Name of sequence to visualize (e.g., 'test1')
+        frames_dir: Directory containing frame images
+        output_video: Output video path
+        submit_nums: List of submit numbers to compare, or None for all
+        fps: Frames per second
+        show_ids: Show track IDs
+        show_confidence: Show confidence scores
+        detailed_headers: Use multi-line detailed headers
+    """
+    print(f"\n{'='*60}")
+    print("  MOTRv2 Results Visualization")
+    print(f"{'='*60}")
+    print(f"  Experiment dir: {exp_dir}")
+    print(f"  Sequence: {sequence_name}")
+    print(f"{'='*60}\n")
+
+    # Find submit folders
+    submit_folders = find_submit_folders(exp_dir)
+
+    if not submit_folders:
+        print(f"Error: No submit folders found in {exp_dir}")
+        return
+
+    # Filter by submit_nums if specified
+    if submit_nums:
+        submit_folders = [(d, n, m) for d, n, m in submit_folders if n in submit_nums]
+
+    if not submit_folders:
+        print(f"Error: No matching submit folders found")
+        return
+
+    print(f"Found {len(submit_folders)} submit folders:")
+    for submit_dir, submit_num, metadata in submit_folders:
+        if metadata:
+            params = metadata.get('parameters', {})
+            print(f"  submit_{submit_num}: score={params.get('score_threshold', '?')}, "
+                  f"miss={params.get('miss_tolerance', '?')}")
+        else:
+            print(f"  submit_{submit_num}: (no metadata)")
+
+    # Find tracking files for the sequence
+    tracking_files = []
+    model_names = []
+
+    for submit_dir, submit_num, metadata in submit_folders:
+        tracking_file = find_sequence_in_submit(submit_dir, sequence_name)
+        if tracking_file:
+            tracking_files.append(tracking_file)
+            if detailed_headers:
+                # For detailed headers, we'll handle this differently
+                header = generate_header_from_metadata(metadata, submit_num)
+            else:
+                header = generate_header_from_metadata(metadata, submit_num)
+            model_names.append(header)
+        else:
+            print(f"  Warning: Sequence '{sequence_name}' not found in submit_{submit_num}")
+            # List available sequences
+            available = list_sequences_in_submit(submit_dir)
+            if available:
+                print(f"           Available: {', '.join(available[:5])}" +
+                      (f"... (+{len(available)-5} more)" if len(available) > 5 else ""))
+
+    if not tracking_files:
+        print(f"\nError: No tracking files found for sequence '{sequence_name}'")
+        return
+
+    print(f"\nCreating comparison video with {len(tracking_files)} results...")
+
+    # Create comparison video
+    create_comparison_video(
+        frames_dir=frames_dir,
+        tracking_files=tracking_files,
+        model_names=model_names,
+        output_video=output_video,
+        fps=fps,
+        show_ids=show_ids,
+        show_confidence=show_confidence
+    )
+
+
+def auto_name_from_path(path):
+    """Generate a readable model name from file path."""
+    from pathlib import Path
+    p = Path(path)
+
+    # For tracking results: tracker/test1_YOLOX.txt -> YOLOX
+    if p.suffix == '.txt':
+        name = p.stem
+        # Try to extract model name from filename
+        parts = name.split('_')
+        if len(parts) > 1:
+            return parts[-1]  # Last part after underscore
+        return name
+
+    # For JSON: det_db_motrv2_DFINE.json -> DFINE
+    if p.suffix == '.json':
+        name = p.stem
+        for prefix in ['det_db_motrv2_', 'det_db_', 'detections_']:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        return name
+
+    return p.stem
+
+
+def find_tracking_files(search_dirs=None, pattern="*.txt"):
+    """Auto-discover tracking result files."""
+    from pathlib import Path
+
+    if search_dirs is None:
+        search_dirs = ['./tracker', './results', './exps', '.']
+
+    results = []
+    for search_dir in search_dirs:
+        search_path = Path(search_dir)
+        if not search_path.exists():
+            continue
+
+        for f in search_path.rglob(pattern):
+            # Skip non-tracking files
+            if f.name in ['config.txt', 'git_status', 'git_diff', 'desc', 'output.log']:
+                continue
+            # Skip if file is too small (likely not tracking data)
+            if f.stat().st_size < 100:
+                continue
+            results.append(str(f))
+
+    return sorted(set(results))
+
+
+def interactive_mode(frames_dir=None):
+    """Interactive mode for easy visualization."""
+    print("\n" + "="*60)
+    print("  MOTRv2 Tracking Visualization - Interactive Mode")
+    print("="*60 + "\n")
+
+    # Step 1: Find frames directory
+    if frames_dir is None:
+        print("Enter path to frames directory (containing .jpg images):")
+        frames_dir = input("> ").strip()
+
+    if not os.path.exists(frames_dir):
+        print(f"Error: Directory not found: {frames_dir}")
+        return
+
+    # Step 2: Auto-discover tracking files
+    print("\nSearching for tracking results...")
+    tracking_files = find_tracking_files()
+
+    # Also search for JSON files
+    json_files = find_tracking_files(pattern="*.json")
+    tracking_files.extend(json_files)
+    tracking_files = sorted(set(tracking_files))
+
+    if not tracking_files:
+        print("No tracking files found. Please specify paths manually.")
+        print("Enter tracking file paths (comma-separated):")
+        paths = input("> ").strip()
+        tracking_files = [p.strip() for p in paths.split(',')]
+    else:
+        print(f"\nFound {len(tracking_files)} tracking files:")
+        for i, f in enumerate(tracking_files):
+            auto_name = auto_name_from_path(f)
+            print(f"  [{i+1}] {f}")
+            print(f"       -> Auto-name: {auto_name}")
+
+        print("\nEnter file numbers to compare (comma-separated), or 'all':")
+        selection = input("> ").strip()
+
+        if selection.lower() == 'all':
+            pass  # Keep all files
+        else:
+            try:
+                indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                tracking_files = [tracking_files[i] for i in indices]
+            except (ValueError, IndexError) as e:
+                print(f"Invalid selection: {e}")
+                return
+
+    # Step 3: Generate names
+    model_names = [auto_name_from_path(f) for f in tracking_files]
+
+    print("\nAuto-generated names:")
+    for f, name in zip(tracking_files, model_names):
+        print(f"  {os.path.basename(f)} -> {name}")
+
+    print("\nPress Enter to accept, or enter custom names (comma-separated):")
+    custom = input("> ").strip()
+    if custom:
+        model_names = [n.strip() for n in custom.split(',')]
+
+    # Step 4: Output path
+    print("\nEnter output video path (default: tracking_comparison.mp4):")
+    output_video = input("> ").strip() or "tracking_comparison.mp4"
+
+    # Step 5: Create video
+    print("\n" + "-"*60)
+    print("Creating comparison video...")
+    print("-"*60 + "\n")
+
+    create_comparison_video(
+        frames_dir=frames_dir,
+        tracking_files=tracking_files,
+        model_names=model_names,
+        output_video=output_video,
+        fps=30,
+        show_ids=True,
+        show_confidence=False
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Create tracking comparison video with multiple models')
-    parser.add_argument('frames_dir', help='Directory containing frame images')
-    parser.add_argument('output_video', help='Output video file path')
-    parser.add_argument('--tracking-files', nargs='+', required=True, 
+    parser = argparse.ArgumentParser(
+        description='Create tracking comparison video with multiple models',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Visualize from experiment output directory (reads metadata for headers)
+  python create_video.py --exp-dir ./exps/motrv2_volleyball --sequence test1 \\
+      --frames-dir /data/Dataset/volleyball/test/test1/img1
+
+  # Compare specific submit runs
+  python create_video.py --exp-dir ./exps/motrv2_volleyball --sequence test1 \\
+      --frames-dir /data/frames --submits 1 3 5
+
+  # Interactive mode (guided setup)
+  python create_video.py --interactive
+
+  # Quick mode with auto-discovery
+  python create_video.py frames_dir output.mp4 --auto
+
+  # Standard mode
+  python create_video.py frames_dir output.mp4 \\
+      --tracking-files tracker/a.txt tracker/b.txt \\
+      --model-names "Model A" "Model B"
+        """
+    )
+
+    # Positional arguments (optional in interactive/auto mode)
+    parser.add_argument('frames_dir', nargs='?', help='Directory containing frame images')
+    parser.add_argument('output_video', nargs='?', default='tracking_comparison.mp4',
+                       help='Output video file path (default: tracking_comparison.mp4)')
+
+    # Mode selection
+    parser.add_argument('--interactive', '-i', action='store_true',
+                       help='Interactive mode with guided setup')
+    parser.add_argument('--auto', '-a', action='store_true',
+                       help='Auto-discover tracking files and generate names')
+
+    # Experiment directory mode (new)
+    parser.add_argument('--exp-dir', '-e', type=str,
+                       help='Experiment output directory containing submit folders')
+    parser.add_argument('--sequence', '-s', type=str,
+                       help='Sequence name to visualize (e.g., test1)')
+    parser.add_argument('--submits', nargs='+', type=int,
+                       help='Specific submit numbers to compare (default: all)')
+    parser.add_argument('--frames-dir', type=str,
+                       help='Directory containing frame images (for --exp-dir mode)')
+
+    # Tracking files
+    parser.add_argument('--tracking-files', '-t', nargs='+',
                        help='List of tracking data files')
-    parser.add_argument('--model-names', nargs='+', required=True,
-                       help='List of model names (must match number of tracking files)')
+    parser.add_argument('--model-names', '-n', nargs='+',
+                       help='List of model names (auto-generated if not provided with --auto)')
+
+    # Video options
     parser.add_argument('--fps', type=int, default=30, help='Frames per second (default: 30)')
     parser.add_argument('--no-ids', action='store_true', help='Hide object IDs')
     parser.add_argument('--show-confidence', action='store_true', help='Show confidence scores')
@@ -520,15 +941,103 @@ def main():
     parser.add_argument('--frame-pattern', help='Custom frame naming pattern (e.g., "{:06d}.jpg")')
     parser.add_argument('--grid-layout', nargs=2, type=int, metavar=('ROWS', 'COLS'),
                        help='Custom grid layout (rows cols)')
-    
+
+    # Search options
+    parser.add_argument('--search-dirs', nargs='+', default=['./tracker', './results', './exps'],
+                       help='Directories to search for tracking files (with --auto)')
+
     args = parser.parse_args()
-    
+
+    # Experiment directory mode
+    if args.exp_dir:
+        if not args.sequence:
+            # List available sequences
+            submit_folders = find_submit_folders(args.exp_dir)
+            if submit_folders:
+                submit_dir, _, _ = submit_folders[0]
+                sequences = list_sequences_in_submit(submit_dir)
+                print(f"Available sequences: {', '.join(sequences)}")
+            parser.error("--sequence required with --exp-dir mode")
+
+        frames_dir = args.frames_dir or args.frames_dir
+        if not frames_dir:
+            parser.error("--frames-dir required with --exp-dir mode")
+
+        output_video = args.output_video
+        if output_video == 'tracking_comparison.mp4':
+            # Generate default name from sequence
+            output_video = f"{args.sequence}_comparison.mp4"
+
+        visualize_from_exp_dir(
+            exp_dir=args.exp_dir,
+            sequence_name=args.sequence,
+            frames_dir=frames_dir,
+            output_video=output_video,
+            submit_nums=args.submits,
+            fps=args.fps,
+            show_ids=not args.no_ids,
+            show_confidence=args.show_confidence
+        )
+        return
+
+    # Interactive mode
+    if args.interactive:
+        interactive_mode(args.frames_dir)
+        return
+
+    # Auto mode
+    if args.auto:
+        if not args.frames_dir:
+            parser.error("frames_dir required with --auto mode")
+
+        print("Auto-discovering tracking files...")
+        tracking_files = find_tracking_files(args.search_dirs)
+        tracking_files.extend(find_tracking_files(args.search_dirs, "*.json"))
+        tracking_files = sorted(set(tracking_files))
+
+        if not tracking_files:
+            print("No tracking files found. Use --tracking-files to specify manually.")
+            return
+
+        print(f"Found {len(tracking_files)} files:")
+        for f in tracking_files:
+            print(f"  {f}")
+
+        model_names = [auto_name_from_path(f) for f in tracking_files]
+
+        create_comparison_video(
+            frames_dir=args.frames_dir,
+            tracking_files=tracking_files,
+            model_names=model_names,
+            output_video=args.output_video,
+            fps=args.fps,
+            show_ids=not args.no_ids,
+            show_confidence=args.show_confidence,
+            frame_format=args.frame_format,
+            frame_name_pattern=args.frame_pattern,
+            grid_layout=tuple(args.grid_layout) if args.grid_layout else None
+        )
+        return
+
+    # Standard mode - require tracking files
+    if not args.tracking_files:
+        parser.error("--tracking-files required (or use --auto or --interactive)")
+
+    # Auto-generate names if not provided
+    model_names = args.model_names
+    if not model_names:
+        model_names = [auto_name_from_path(f) for f in args.tracking_files]
+        print(f"Auto-generated model names: {model_names}")
+
+    if len(model_names) != len(args.tracking_files):
+        parser.error("Number of model names must match number of tracking files")
+
     grid_layout = tuple(args.grid_layout) if args.grid_layout else None
-    
+
     create_comparison_video(
         frames_dir=args.frames_dir,
         tracking_files=args.tracking_files,
-        model_names=args.model_names,
+        model_names=model_names,
         output_video=args.output_video,
         fps=args.fps,
         show_ids=not args.no_ids,
@@ -538,30 +1047,10 @@ def main():
         grid_layout=grid_layout
     )
 
+
 if __name__ == "__main__":
-    # Option 1: Use command line arguments
     if len(sys.argv) > 1:
         main()
     else:
-        # Option 2: Direct execution with hardcoded paths
-        # Uncomment and modify the paths below:
-        
-        create_comparison_video(
-            frames_dir="data/Dataset/mot/volleyball/test/test1/img1",  # Replace with your frames directory
-            tracking_files=[
-                "tracker/test1.txt",
-                "tracker/test1_YOLOX.txt", 
-                "data/Dataset/mot/det_db_motrv2_DFINE.json",
-                "data/Dataset/mot/det_db_motrv2_YOLOX.json"
-            ],
-                model_names=[
-                "D-FINE+MOTRv2",
-                "YOLOX+MOTRv2", 
-                "D-FINE only",
-                "YOLOX only"
-            ],
-            output_video="tracking_comparison.mp4",  # Output filename
-            fps=30,
-            grid_layout=(2, 2),  # 2x2 grid for 4 models
-            show_confidence=True
-        )
+        # No arguments - run interactive mode
+        interactive_mode()
