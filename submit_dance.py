@@ -10,6 +10,9 @@
 
 from copy import deepcopy
 import json
+import time
+from datetime import datetime
+from collections import defaultdict
 
 import os
 import argparse
@@ -94,6 +97,13 @@ class Detector(object):
         self.predict_path = os.path.join(self.args.output_dir, args.exp_name)
         os.makedirs(self.predict_path, exist_ok=True)
 
+        # Statistics tracking
+        self.stats = {
+            'sequence': self.seq_num,
+            'video_path': vid,
+            'num_frames': self.img_len,
+        }
+
     @staticmethod
     def filter_dt_by_score(dt_instances: Instances, prob_threshold: float) -> Instances:
         keep = dt_instances.scores > prob_threshold
@@ -108,15 +118,22 @@ class Detector(object):
         return dt_instances[keep]
 
     def detect(self, prob_threshold=0.6, area_threshold=100, vis=False):
+        start_time = time.time()
         total_dts = 0
         total_occlusion_dts = 0
+
+        # Per-frame statistics
+        detections_per_frame = []
+        all_track_ids = set()
+        frame_times = []
 
         track_instances = None
         with open(os.path.join(self.args.mot_path, self.args.det_db)) as f:
             det_db = json.load(f)
         loader = DataLoader(ListImgDataset(self.args.mot_path, self.img_list, det_db), 1, num_workers=2)
         lines = []
-        for i, data in enumerate(tqdm(loader)):
+        for i, data in enumerate(tqdm(loader, desc=f"Processing {self.seq_num}")):
+            frame_start = time.time()
             cur_img, ori_img, proposals = [d[0] for d in data]
             cur_img, proposals = cur_img.cuda(), proposals.cuda()
 
@@ -135,7 +152,9 @@ class Detector(object):
             dt_instances = self.filter_dt_by_score(dt_instances, prob_threshold)
             dt_instances = self.filter_dt_by_area(dt_instances, area_threshold)
 
-            total_dts += len(dt_instances)
+            num_dets = len(dt_instances)
+            total_dts += num_dets
+            detections_per_frame.append(num_dets)
 
             bbox_xyxy = dt_instances.boxes.tolist()
             identities = dt_instances.obj_idxes.tolist()
@@ -146,10 +165,43 @@ class Detector(object):
                     continue
                 x1, y1, x2, y2 = xyxy
                 w, h = x2 - x1, y2 - y1
-                lines.append(save_format.format(frame=i + 1, id=track_id, x1=x1, y1=y1, w=w, h=h))
-        with open(os.path.join(self.predict_path, f'{self.seq_num}.txt'), 'w') as f:
+                lines.append(save_format.format(frame=i + 1, id=int(track_id), x1=x1, y1=y1, w=w, h=h))
+                all_track_ids.add(int(track_id))
+
+            frame_times.append(time.time() - frame_start)
+
+        # Save tracking results
+        result_file = os.path.join(self.predict_path, f'{self.seq_num}.txt')
+        with open(result_file, 'w') as f:
             f.writelines(lines)
-        print("totally {} dts {} occlusion dts".format(total_dts, total_occlusion_dts))
+
+        # Calculate statistics
+        elapsed_time = time.time() - start_time
+        avg_fps = len(self.img_list) / elapsed_time if elapsed_time > 0 else 0
+
+        self.stats.update({
+            'total_detections': total_dts,
+            'unique_tracks': len(all_track_ids),
+            'avg_detections_per_frame': total_dts / len(self.img_list) if self.img_list else 0,
+            'min_detections_per_frame': min(detections_per_frame) if detections_per_frame else 0,
+            'max_detections_per_frame': max(detections_per_frame) if detections_per_frame else 0,
+            'elapsed_time_seconds': round(elapsed_time, 2),
+            'avg_fps': round(avg_fps, 2),
+            'avg_frame_time_ms': round(sum(frame_times) / len(frame_times) * 1000, 2) if frame_times else 0,
+            'result_file': result_file,
+        })
+
+        print(f"\n{'='*50}")
+        print(f"Sequence: {self.seq_num}")
+        print(f"  Frames: {self.stats['num_frames']}")
+        print(f"  Total detections: {total_dts}")
+        print(f"  Unique tracks: {len(all_track_ids)}")
+        print(f"  Avg detections/frame: {self.stats['avg_detections_per_frame']:.1f}")
+        print(f"  Processing time: {elapsed_time:.1f}s ({avg_fps:.1f} FPS)")
+        print(f"  Results saved to: {result_file}")
+        print(f"{'='*50}\n")
+
+        return self.stats
 
 class RuntimeTrackerBase(object):
     def __init__(self, score_thresh=0.6, filter_score_thresh=0.5, miss_tolerance=10):
@@ -177,15 +229,80 @@ class RuntimeTrackerBase(object):
         track_instances.obj_idxes[to_del] = -1
 
 
+def save_run_metadata(args, all_stats, output_dir, exp_name):
+    """Save run metadata and statistics to JSON file."""
+    metadata = {
+        'timestamp': datetime.now().isoformat(),
+        'parameters': {
+            'checkpoint': args.resume,
+            'det_db': args.det_db,
+            'mot_path': args.mot_path,
+            'score_threshold': args.score_threshold,
+            'update_score_threshold': args.update_score_threshold,
+            'miss_tolerance': args.miss_tolerance,
+            'exp_name': exp_name,
+        },
+        'summary': {
+            'num_sequences': len(all_stats),
+            'total_frames': sum(s['num_frames'] for s in all_stats),
+            'total_detections': sum(s['total_detections'] for s in all_stats),
+            'total_unique_tracks': sum(s['unique_tracks'] for s in all_stats),
+            'total_time_seconds': sum(s['elapsed_time_seconds'] for s in all_stats),
+        },
+        'sequences': all_stats,
+    }
+
+    # Calculate overall averages
+    if all_stats:
+        metadata['summary']['avg_detections_per_frame'] = round(
+            metadata['summary']['total_detections'] / metadata['summary']['total_frames'], 2
+        ) if metadata['summary']['total_frames'] > 0 else 0
+        metadata['summary']['overall_fps'] = round(
+            metadata['summary']['total_frames'] / metadata['summary']['total_time_seconds'], 2
+        ) if metadata['summary']['total_time_seconds'] > 0 else 0
+
+    # Save metadata
+    metadata_file = os.path.join(output_dir, exp_name, 'inference_metadata.json')
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print("INFERENCE COMPLETE")
+    print(f"{'='*60}")
+    print(f"  Sequences processed: {metadata['summary']['num_sequences']}")
+    print(f"  Total frames: {metadata['summary']['total_frames']}")
+    print(f"  Total detections: {metadata['summary']['total_detections']}")
+    print(f"  Total unique tracks: {metadata['summary']['total_unique_tracks']}")
+    print(f"  Overall FPS: {metadata['summary'].get('overall_fps', 'N/A')}")
+    print(f"  Metadata saved to: {metadata_file}")
+    print(f"{'='*60}\n")
+
+    return metadata
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     parser.add_argument('--score_threshold', default=0.5, type=float)
     parser.add_argument('--update_score_threshold', default=0.5, type=float)
     parser.add_argument('--miss_tolerance', default=20, type=int)
+    parser.add_argument('--area_threshold', default=100, type=float,
+                       help='Minimum detection area in pixels (default: 100)')
+    parser.add_argument('--sub_dir', default='volleyball/test', type=str,
+                       help='Subdirectory containing test sequences (default: volleyball/test)')
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print("MOTRv2 INFERENCE")
+    print(f"{'='*60}")
+    print(f"  Checkpoint: {args.resume}")
+    print(f"  Detection DB: {args.det_db}")
+    print(f"  Score threshold: {args.score_threshold}")
+    print(f"  Miss tolerance: {args.miss_tolerance}")
+    print(f"  Area threshold: {args.area_threshold}")
+    print(f"{'='*60}\n")
 
     # load model and weights
     detr, _, _ = build_model(args)
@@ -196,18 +313,25 @@ if __name__ == '__main__':
     detr.eval()
     detr = detr.cuda()
 
-    # '''for MOT17 submit''' 
-    # sub_dir = 'DanceTrack/test'
-    sub_dir = 'volleyball/test'
+    # Get sequences to process
+    sub_dir = args.sub_dir
     seq_nums = os.listdir(os.path.join(args.mot_path, sub_dir))
     if 'seqmap' in seq_nums:
         seq_nums.remove('seqmap')
-    vids = [os.path.join(sub_dir, seq) for seq in seq_nums]
+    vids = [os.path.join(sub_dir, seq) for seq in sorted(seq_nums)]
 
     rank = int(os.environ.get('RLAUNCH_REPLICA', '0'))
     ws = int(os.environ.get('RLAUNCH_REPLICA_TOTAL', '1'))
     vids = vids[rank::ws]
 
+    print(f"Processing {len(vids)} sequences: {[os.path.basename(v) for v in vids]}\n")
+
+    # Process all sequences and collect stats
+    all_stats = []
     for vid in vids:
         det = Detector(args, model=detr, vid=vid)
-        det.detect(args.score_threshold)
+        stats = det.detect(args.score_threshold, args.area_threshold)
+        all_stats.append(stats)
+
+    # Save metadata
+    save_run_metadata(args, all_stats, args.output_dir, args.exp_name)
