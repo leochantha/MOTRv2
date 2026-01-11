@@ -800,83 +800,100 @@ def find_tracking_files(search_dirs=None, pattern="*.txt"):
 
 def interactive_mode(frames_dir=None):
     """Interactive mode for easy visualization."""
+    # Check if we're in an interactive terminal
+    if not sys.stdin.isatty():
+        print("Error: Interactive mode requires a terminal.")
+        print("Use --exp-dir mode for non-interactive environments:")
+        print("  python create_video.py --exp-dir ./exps/exp_name --sequence test1 \\")
+        print("      --frames-dir /path/to/frames")
+        return
+
     print("\n" + "="*60)
     print("  MOTRv2 Tracking Visualization - Interactive Mode")
     print("="*60 + "\n")
 
-    # Step 1: Find frames directory
-    if frames_dir is None:
-        print("Enter path to frames directory (containing .jpg images):")
-        frames_dir = input("> ").strip()
+    try:
+        # Step 1: Find frames directory
+        if frames_dir is None:
+            print("Enter path to frames directory (containing .jpg images):")
+            frames_dir = input("> ").strip()
 
-    if not os.path.exists(frames_dir):
-        print(f"Error: Directory not found: {frames_dir}")
-        return
+        if not os.path.exists(frames_dir):
+            print(f"Error: Directory not found: {frames_dir}")
+            return
 
-    # Step 2: Auto-discover tracking files
-    print("\nSearching for tracking results...")
-    tracking_files = find_tracking_files()
+        # Step 2: Auto-discover tracking files
+        print("\nSearching for tracking results...")
+        tracking_files = find_tracking_files()
 
-    # Also search for JSON files
-    json_files = find_tracking_files(pattern="*.json")
-    tracking_files.extend(json_files)
-    tracking_files = sorted(set(tracking_files))
+        # Also search for JSON files
+        json_files = find_tracking_files(pattern="*.json")
+        tracking_files.extend(json_files)
+        tracking_files = sorted(set(tracking_files))
 
-    if not tracking_files:
-        print("No tracking files found. Please specify paths manually.")
-        print("Enter tracking file paths (comma-separated):")
-        paths = input("> ").strip()
-        tracking_files = [p.strip() for p in paths.split(',')]
-    else:
-        print(f"\nFound {len(tracking_files)} tracking files:")
-        for i, f in enumerate(tracking_files):
-            auto_name = auto_name_from_path(f)
-            print(f"  [{i+1}] {f}")
-            print(f"       -> Auto-name: {auto_name}")
-
-        print("\nEnter file numbers to compare (comma-separated), or 'all':")
-        selection = input("> ").strip()
-
-        if selection.lower() == 'all':
-            pass  # Keep all files
+        if not tracking_files:
+            print("No tracking files found. Please specify paths manually.")
+            print("Enter tracking file paths (comma-separated):")
+            paths = input("> ").strip()
+            tracking_files = [p.strip() for p in paths.split(',')]
         else:
-            try:
-                indices = [int(x.strip()) - 1 for x in selection.split(',')]
-                tracking_files = [tracking_files[i] for i in indices]
-            except (ValueError, IndexError) as e:
-                print(f"Invalid selection: {e}")
-                return
+            print(f"\nFound {len(tracking_files)} tracking files:")
+            for i, f in enumerate(tracking_files):
+                auto_name = auto_name_from_path(f)
+                print(f"  [{i+1}] {f}")
+                print(f"       -> Auto-name: {auto_name}")
 
-    # Step 3: Generate names
-    model_names = [auto_name_from_path(f) for f in tracking_files]
+            print("\nEnter file numbers to compare (comma-separated), or 'all':")
+            selection = input("> ").strip()
 
-    print("\nAuto-generated names:")
-    for f, name in zip(tracking_files, model_names):
-        print(f"  {os.path.basename(f)} -> {name}")
+            if selection.lower() == 'all':
+                pass  # Keep all files
+            else:
+                try:
+                    indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                    tracking_files = [tracking_files[i] for i in indices]
+                except (ValueError, IndexError) as e:
+                    print(f"Invalid selection: {e}")
+                    return
 
-    print("\nPress Enter to accept, or enter custom names (comma-separated):")
-    custom = input("> ").strip()
-    if custom:
-        model_names = [n.strip() for n in custom.split(',')]
+        # Step 3: Generate names
+        model_names = [auto_name_from_path(f) for f in tracking_files]
 
-    # Step 4: Output path
-    print("\nEnter output video path (default: tracking_comparison.mp4):")
-    output_video = input("> ").strip() or "tracking_comparison.mp4"
+        print("\nAuto-generated names:")
+        for f, name in zip(tracking_files, model_names):
+            print(f"  {os.path.basename(f)} -> {name}")
 
-    # Step 5: Create video
-    print("\n" + "-"*60)
-    print("Creating comparison video...")
-    print("-"*60 + "\n")
+        print("\nPress Enter to accept, or enter custom names (comma-separated):")
+        custom = input("> ").strip()
+        if custom:
+            model_names = [n.strip() for n in custom.split(',')]
 
-    create_comparison_video(
-        frames_dir=frames_dir,
-        tracking_files=tracking_files,
-        model_names=model_names,
-        output_video=output_video,
-        fps=30,
-        show_ids=True,
-        show_confidence=False
-    )
+        # Step 4: Output path
+        print("\nEnter output video path (default: tracking_comparison.mp4):")
+        output_video = input("> ").strip() or "tracking_comparison.mp4"
+
+        # Step 5: Create video
+        print("\n" + "-"*60)
+        print("Creating comparison video...")
+        print("-"*60 + "\n")
+
+        create_comparison_video(
+            frames_dir=frames_dir,
+            tracking_files=tracking_files,
+            model_names=model_names,
+            output_video=output_video,
+            fps=30,
+            show_ids=True,
+            show_confidence=False
+        )
+
+    except EOFError:
+        print("\nError: Interactive mode requires a terminal with stdin.")
+        print("Use --exp-dir mode for non-interactive environments:")
+        print("  python create_video.py --exp-dir ./exps/exp_name --sequence test1 \\")
+        print("      --frames-dir /path/to/frames")
+    except KeyboardInterrupt:
+        print("\nCancelled.")
 
 
 def main():
