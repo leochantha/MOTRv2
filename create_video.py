@@ -505,6 +505,249 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
     print(f"Total frames processed: {processed_frames}")
     print(f"Models compared: {', '.join(model_names)}")
 
+def load_submit_metadata(submit_dir):
+    """Load inference metadata from a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder (e.g., exps/exp_name/submit_1)
+
+    Returns:
+        Dictionary with metadata or None if not found
+    """
+    metadata_file = os.path.join(submit_dir, 'inference_metadata.json')
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            return json.load(f)
+    return None
+
+
+def find_submit_folders(exp_dir):
+    """Find all submit folders in an experiment directory.
+
+    Args:
+        exp_dir: Path to experiment directory (e.g., exps/motrv2_volleyball)
+
+    Returns:
+        List of (submit_dir, submit_num, metadata) tuples, sorted by submit number
+    """
+    import re
+    from pathlib import Path
+
+    results = []
+    exp_path = Path(exp_dir)
+
+    if not exp_path.exists():
+        return results
+
+    for item in exp_path.iterdir():
+        if item.is_dir():
+            match = re.match(r'submit_(\d+)$', item.name)
+            if match:
+                submit_num = int(match.group(1))
+                metadata = load_submit_metadata(str(item))
+                results.append((str(item), submit_num, metadata))
+
+    # Sort by submit number
+    results.sort(key=lambda x: x[1])
+    return results
+
+
+def generate_header_from_metadata(metadata, submit_num):
+    """Generate a descriptive header string from metadata.
+
+    Args:
+        metadata: Dictionary from inference_metadata.json
+        submit_num: Submit folder number
+
+    Returns:
+        Header string for video overlay
+    """
+    if metadata is None:
+        return f"Submit {submit_num}"
+
+    params = metadata.get('parameters', {})
+    summary = metadata.get('summary', {})
+
+    # Extract key parameters
+    score_thr = params.get('score_threshold', '?')
+    miss_tol = params.get('miss_tolerance', '?')
+
+    # Get checkpoint name (just the filename)
+    checkpoint = params.get('checkpoint', '')
+    if checkpoint:
+        checkpoint = os.path.basename(checkpoint)
+        # Shorten if too long
+        if len(checkpoint) > 30:
+            checkpoint = checkpoint[:27] + '...'
+
+    # Build header
+    header_parts = [f"Submit {submit_num}"]
+    header_parts.append(f"score={score_thr}")
+    header_parts.append(f"miss={miss_tol}")
+
+    return " | ".join(header_parts)
+
+
+def generate_detailed_header(metadata, submit_num):
+    """Generate a multi-line detailed header from metadata.
+
+    Args:
+        metadata: Dictionary from inference_metadata.json
+        submit_num: Submit folder number
+
+    Returns:
+        List of header lines for video overlay
+    """
+    if metadata is None:
+        return [f"Submit {submit_num}"]
+
+    params = metadata.get('parameters', {})
+    summary = metadata.get('summary', {})
+
+    lines = [f"Submit {submit_num}"]
+
+    # Parameters line
+    score_thr = params.get('score_threshold', '?')
+    miss_tol = params.get('miss_tolerance', '?')
+    lines.append(f"score={score_thr} miss={miss_tol}")
+
+    # Stats line (if available)
+    if summary:
+        tracks = summary.get('total_unique_tracks', '?')
+        fps = summary.get('overall_fps', '?')
+        lines.append(f"tracks={tracks} fps={fps}")
+
+    return lines
+
+
+def find_sequence_in_submit(submit_dir, sequence_name):
+    """Find tracking file for a sequence in a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder
+        sequence_name: Name of sequence (e.g., 'test1')
+
+    Returns:
+        Path to tracking file or None
+    """
+    # Try exact match
+    tracking_file = os.path.join(submit_dir, f"{sequence_name}.txt")
+    if os.path.exists(tracking_file):
+        return tracking_file
+
+    # Try with different extensions/patterns
+    for pattern in [f"{sequence_name}*.txt", f"*{sequence_name}*.txt"]:
+        matches = glob.glob(os.path.join(submit_dir, pattern))
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def list_sequences_in_submit(submit_dir):
+    """List all available sequences in a submit folder.
+
+    Args:
+        submit_dir: Path to submit folder
+
+    Returns:
+        List of sequence names
+    """
+    sequences = []
+    for f in glob.glob(os.path.join(submit_dir, "*.txt")):
+        name = os.path.basename(f)
+        if name != 'inference_metadata.json':
+            sequences.append(os.path.splitext(name)[0])
+    return sorted(sequences)
+
+
+def visualize_from_exp_dir(exp_dir, sequence_name, frames_dir, output_video,
+                           submit_nums=None, fps=30, show_ids=True,
+                           show_confidence=False, detailed_headers=False):
+    """Create comparison video from experiment output directory.
+
+    Args:
+        exp_dir: Path to experiment directory (e.g., exps/motrv2_volleyball)
+        sequence_name: Name of sequence to visualize (e.g., 'test1')
+        frames_dir: Directory containing frame images
+        output_video: Output video path
+        submit_nums: List of submit numbers to compare, or None for all
+        fps: Frames per second
+        show_ids: Show track IDs
+        show_confidence: Show confidence scores
+        detailed_headers: Use multi-line detailed headers
+    """
+    print(f"\n{'='*60}")
+    print("  MOTRv2 Results Visualization")
+    print(f"{'='*60}")
+    print(f"  Experiment dir: {exp_dir}")
+    print(f"  Sequence: {sequence_name}")
+    print(f"{'='*60}\n")
+
+    # Find submit folders
+    submit_folders = find_submit_folders(exp_dir)
+
+    if not submit_folders:
+        print(f"Error: No submit folders found in {exp_dir}")
+        return
+
+    # Filter by submit_nums if specified
+    if submit_nums:
+        submit_folders = [(d, n, m) for d, n, m in submit_folders if n in submit_nums]
+
+    if not submit_folders:
+        print(f"Error: No matching submit folders found")
+        return
+
+    print(f"Found {len(submit_folders)} submit folders:")
+    for submit_dir, submit_num, metadata in submit_folders:
+        if metadata:
+            params = metadata.get('parameters', {})
+            print(f"  submit_{submit_num}: score={params.get('score_threshold', '?')}, "
+                  f"miss={params.get('miss_tolerance', '?')}")
+        else:
+            print(f"  submit_{submit_num}: (no metadata)")
+
+    # Find tracking files for the sequence
+    tracking_files = []
+    model_names = []
+
+    for submit_dir, submit_num, metadata in submit_folders:
+        tracking_file = find_sequence_in_submit(submit_dir, sequence_name)
+        if tracking_file:
+            tracking_files.append(tracking_file)
+            if detailed_headers:
+                # For detailed headers, we'll handle this differently
+                header = generate_header_from_metadata(metadata, submit_num)
+            else:
+                header = generate_header_from_metadata(metadata, submit_num)
+            model_names.append(header)
+        else:
+            print(f"  Warning: Sequence '{sequence_name}' not found in submit_{submit_num}")
+            # List available sequences
+            available = list_sequences_in_submit(submit_dir)
+            if available:
+                print(f"           Available: {', '.join(available[:5])}" +
+                      (f"... (+{len(available)-5} more)" if len(available) > 5 else ""))
+
+    if not tracking_files:
+        print(f"\nError: No tracking files found for sequence '{sequence_name}'")
+        return
+
+    print(f"\nCreating comparison video with {len(tracking_files)} results...")
+
+    # Create comparison video
+    create_comparison_video(
+        frames_dir=frames_dir,
+        tracking_files=tracking_files,
+        model_names=model_names,
+        output_video=output_video,
+        fps=fps,
+        show_ids=show_ids,
+        show_confidence=show_confidence
+    )
+
+
 def auto_name_from_path(path):
     """Generate a readable model name from file path."""
     from pathlib import Path
@@ -642,6 +885,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Visualize from experiment output directory (reads metadata for headers)
+  python create_video.py --exp-dir ./exps/motrv2_volleyball --sequence test1 \\
+      --frames-dir /data/Dataset/volleyball/test/test1/img1
+
+  # Compare specific submit runs
+  python create_video.py --exp-dir ./exps/motrv2_volleyball --sequence test1 \\
+      --frames-dir /data/frames --submits 1 3 5
+
   # Interactive mode (guided setup)
   python create_video.py --interactive
 
@@ -666,6 +917,16 @@ Examples:
     parser.add_argument('--auto', '-a', action='store_true',
                        help='Auto-discover tracking files and generate names')
 
+    # Experiment directory mode (new)
+    parser.add_argument('--exp-dir', '-e', type=str,
+                       help='Experiment output directory containing submit folders')
+    parser.add_argument('--sequence', '-s', type=str,
+                       help='Sequence name to visualize (e.g., test1)')
+    parser.add_argument('--submits', nargs='+', type=int,
+                       help='Specific submit numbers to compare (default: all)')
+    parser.add_argument('--frames-dir', type=str,
+                       help='Directory containing frame images (for --exp-dir mode)')
+
     # Tracking files
     parser.add_argument('--tracking-files', '-t', nargs='+',
                        help='List of tracking data files')
@@ -686,6 +947,38 @@ Examples:
                        help='Directories to search for tracking files (with --auto)')
 
     args = parser.parse_args()
+
+    # Experiment directory mode
+    if args.exp_dir:
+        if not args.sequence:
+            # List available sequences
+            submit_folders = find_submit_folders(args.exp_dir)
+            if submit_folders:
+                submit_dir, _, _ = submit_folders[0]
+                sequences = list_sequences_in_submit(submit_dir)
+                print(f"Available sequences: {', '.join(sequences)}")
+            parser.error("--sequence required with --exp-dir mode")
+
+        frames_dir = args.frames_dir or args.frames_dir
+        if not frames_dir:
+            parser.error("--frames-dir required with --exp-dir mode")
+
+        output_video = args.output_video
+        if output_video == 'tracking_comparison.mp4':
+            # Generate default name from sequence
+            output_video = f"{args.sequence}_comparison.mp4"
+
+        visualize_from_exp_dir(
+            exp_dir=args.exp_dir,
+            sequence_name=args.sequence,
+            frames_dir=frames_dir,
+            output_video=output_video,
+            submit_nums=args.submits,
+            fps=args.fps,
+            show_ids=not args.no_ids,
+            show_confidence=args.show_confidence
+        )
+        return
 
     # Interactive mode
     if args.interactive:
