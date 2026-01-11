@@ -27,6 +27,36 @@ from main import get_args_parser
 
 from models.structures import Instances
 from torch.utils.data import Dataset, DataLoader
+import re
+
+
+def get_next_submit_folder(base_dir, exp_name):
+    """Find the next available numbered submit folder (submit_1, submit_2, etc.).
+
+    Args:
+        base_dir: Base output directory
+        exp_name: Experiment name (used as prefix)
+
+    Returns:
+        Path to the next available submit folder
+    """
+    exp_base = os.path.join(base_dir, exp_name)
+    os.makedirs(exp_base, exist_ok=True)
+
+    # Find existing submit folders
+    existing = []
+    if os.path.exists(exp_base):
+        for name in os.listdir(exp_base):
+            match = re.match(r'submit_(\d+)$', name)
+            if match:
+                existing.append(int(match.group(1)))
+
+    # Get next number
+    next_num = max(existing, default=0) + 1
+    submit_dir = os.path.join(exp_base, f'submit_{next_num}')
+    os.makedirs(submit_dir, exist_ok=True)
+
+    return submit_dir, next_num
 
 
 class ListImgDataset(Dataset):
@@ -82,7 +112,7 @@ class ListImgDataset(Dataset):
 
 
 class Detector(object):
-    def __init__(self, args, model, vid):
+    def __init__(self, args, model, vid, predict_path):
         self.args = args
         self.detr = model
 
@@ -94,8 +124,7 @@ class Detector(object):
         self.img_list = sorted(img_list)
         self.img_len = len(self.img_list)
 
-        self.predict_path = os.path.join(self.args.output_dir, args.exp_name)
-        os.makedirs(self.predict_path, exist_ok=True)
+        self.predict_path = predict_path
 
         # Statistics tracking
         self.stats = {
@@ -229,10 +258,19 @@ class RuntimeTrackerBase(object):
         track_instances.obj_idxes[to_del] = -1
 
 
-def save_run_metadata(args, all_stats, output_dir, exp_name):
-    """Save run metadata and statistics to JSON file."""
+def save_run_metadata(args, all_stats, submit_dir, submit_num):
+    """Save run metadata and statistics to JSON file.
+
+    Args:
+        args: Command line arguments
+        all_stats: List of per-sequence statistics
+        submit_dir: Path to the submit folder (e.g., output/exp_name/submit_1)
+        submit_num: Submit folder number (e.g., 1)
+    """
     metadata = {
         'timestamp': datetime.now().isoformat(),
+        'submit_number': submit_num,
+        'submit_dir': submit_dir,
         'parameters': {
             'checkpoint': args.resume,
             'det_db': args.det_db,
@@ -240,7 +278,7 @@ def save_run_metadata(args, all_stats, output_dir, exp_name):
             'score_threshold': args.score_threshold,
             'update_score_threshold': args.update_score_threshold,
             'miss_tolerance': args.miss_tolerance,
-            'exp_name': exp_name,
+            'exp_name': args.exp_name,
         },
         'summary': {
             'num_sequences': len(all_stats),
@@ -262,19 +300,20 @@ def save_run_metadata(args, all_stats, output_dir, exp_name):
         ) if metadata['summary']['total_time_seconds'] > 0 else 0
 
     # Save metadata
-    metadata_file = os.path.join(output_dir, exp_name, 'inference_metadata.json')
+    metadata_file = os.path.join(submit_dir, 'inference_metadata.json')
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
 
     print(f"\n{'='*60}")
     print("INFERENCE COMPLETE")
     print(f"{'='*60}")
+    print(f"  Submit folder: submit_{submit_num}")
     print(f"  Sequences processed: {metadata['summary']['num_sequences']}")
     print(f"  Total frames: {metadata['summary']['total_frames']}")
     print(f"  Total detections: {metadata['summary']['total_detections']}")
     print(f"  Total unique tracks: {metadata['summary']['total_unique_tracks']}")
     print(f"  Overall FPS: {metadata['summary'].get('overall_fps', 'N/A')}")
-    print(f"  Metadata saved to: {metadata_file}")
+    print(f"  Results saved to: {submit_dir}")
     print(f"{'='*60}\n")
 
     return metadata
@@ -294,9 +333,13 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    # Create auto-incrementing submit folder
+    submit_dir, submit_num = get_next_submit_folder(args.output_dir, args.exp_name)
+
     print(f"\n{'='*60}")
     print("MOTRv2 INFERENCE")
     print(f"{'='*60}")
+    print(f"  Output: {submit_dir}")
     print(f"  Checkpoint: {args.resume}")
     print(f"  Detection DB: {args.det_db}")
     print(f"  Score threshold: {args.score_threshold}")
@@ -329,9 +372,9 @@ if __name__ == '__main__':
     # Process all sequences and collect stats
     all_stats = []
     for vid in vids:
-        det = Detector(args, model=detr, vid=vid)
+        det = Detector(args, model=detr, vid=vid, predict_path=submit_dir)
         stats = det.detect(args.score_threshold, args.area_threshold)
         all_stats.append(stats)
 
     # Save metadata
-    save_run_metadata(args, all_stats, args.output_dir, args.exp_name)
+    save_run_metadata(args, all_stats, submit_dir, submit_num)
