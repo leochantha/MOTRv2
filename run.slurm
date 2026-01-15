@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=gpu1
+#SBATCH --partition=gpu8
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
@@ -25,8 +25,8 @@ export OMP_NUM_THREADS=8
 
 conda activate pytorch
 
-## ./tools/train.sh configs/motrv2_volleyball.args
+./tools/train.sh configs/motrv2_volleyball.args
 
 
-./tools/simple_inference.sh ./motrv2_dancetrack.pth
-python create_video.py
+## ./tools/simple_inference.sh ./motrv2_dancetrack.pth
+## python create_video.py data/Dataset/mot/Volleyball-Activity-Dataset-3/train/match1/img1 output.mp4 --tracking-files data/Dataset/mot/Volleyball-Activity-Dataset-3/train/match1/gt/gt.txt --model-names "New Visualization Script"
