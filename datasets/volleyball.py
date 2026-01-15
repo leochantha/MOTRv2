@@ -77,6 +77,7 @@ class DetVolleyballDetection:
         self.sample_interval = args.sample_interval
         self.video_dict = {}
         self.mot_path = args.mot_path
+        self.data_txt_path = data_txt_path
 
         self.labels_full = defaultdict(lambda: defaultdict(list))
         self.frame_paths = {}  # Maps (vid, frame_idx) -> image path
@@ -86,7 +87,7 @@ class DetVolleyballDetection:
         if gt_json_path:
             self._load_json_format(gt_json_path, args)
         else:
-            self._load_mot_format()
+            self._load_mot_format(data_txt_path)
 
         vid_files = list(self.labels_full.keys())
 
@@ -212,50 +213,73 @@ class DetVolleyballDetection:
 
         print(f"Loaded {len(gt_data)} frames from JSON")
 
-    def _load_mot_format(self):
-        """Load annotations from MOT-style gt.txt files."""
+    def _load_mot_format(self, data_txt_path):
+        """Load annotations from MOT-style gt.txt files.
 
-        def add_volleyball_folder(split_dir):
-            """Load annotations from a volleyball dataset split directory."""
-            split_path = os.path.join(self.mot_path, split_dir)
-            if not os.path.exists(split_path):
-                print(f"Warning: Split directory {split_path} does not exist")
-                return
+        Reads sequences from data_txt_path file. Each line can be:
+        - Just sequence name: "match1" (will look in train/, valid/, test/)
+        - Full path: "train/match1"
+        """
 
-            print(f"Adding volleyball data from: {split_dir}")
-            for vid in os.listdir(split_path):
-                if vid.startswith('.') or vid == 'seqmap':
+        def load_sequence(vid_path):
+            """Load annotations for a single sequence."""
+            gt_path = os.path.join(self.mot_path, vid_path, 'gt', 'gt.txt')
+
+            if not os.path.exists(gt_path):
+                print(f"Warning: GT file not found: {gt_path}")
+                return False
+
+            print(f"  Loading: {vid_path}")
+            for l in open(gt_path):
+                parts = l.strip().split(',')
+                if len(parts) < 6:
                     continue
 
-                vid_path = os.path.join(split_dir, vid)
-                gt_path = os.path.join(self.mot_path, vid_path, 'gt', 'gt.txt')
+                # Support both 8-column and 6-column formats
+                if len(parts) >= 8:
+                    t, i, *xywh, mark, label = parts[:8]
+                    t, i, mark, label = map(int, (t, i, mark, label))
+                    if mark == 0:
+                        continue
+                else:
+                    # 6-column format: frame_id, track_id, x, y, w, h
+                    t, i = int(parts[0]), int(parts[1])
+                    xywh = parts[2:6]
 
-                if not os.path.exists(gt_path):
-                    print(f"Warning: GT file not found for {vid_path}")
+                x, y, w, h = map(float, xywh)
+                # Store: x, y, w, h, track_id, is_crowd, score
+                self.labels_full[vid_path][t].append([x, y, w, h, i, False, 1.0])
+            return True
+
+        # Read sequences from data_txt_path file
+        print(f"Loading sequences from: {data_txt_path}")
+
+        if not os.path.exists(data_txt_path):
+            print(f"Warning: Data file {data_txt_path} not found")
+            return
+
+        with open(data_txt_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
                     continue
 
-                for l in open(gt_path):
-                    parts = l.strip().split(',')
-                    if len(parts) < 6:
+                # Check if it's a full path (contains /) or just sequence name
+                if '/' in line:
+                    vid_path = line
+                    if load_sequence(vid_path):
                         continue
 
-                    # Support both 8-column and 6-column formats
-                    if len(parts) >= 8:
-                        t, i, *xywh, mark, label = parts[:8]
-                        t, i, mark, label = map(int, (t, i, mark, label))
-                        if mark == 0:
-                            continue
-                    else:
-                        # 6-column format: frame_id, track_id, x, y, w, h
-                        t, i = int(parts[0]), int(parts[1])
-                        xywh = parts[2:6]
-
-                    x, y, w, h = map(float, xywh)
-                    # Store: x, y, w, h, track_id, is_crowd, score
-                    self.labels_full[vid_path][t].append([x, y, w, h, i, False, 1.0])
-
-        # Load training data
-        add_volleyball_folder("train")
+                # Try common split directories
+                for split in ['train', 'valid', 'val', 'test']:
+                    vid_path = os.path.join(split, line)
+                    full_path = os.path.join(self.mot_path, vid_path, 'gt', 'gt.txt')
+                    if os.path.exists(full_path):
+                        load_sequence(vid_path)
+                        break
+                else:
+                    print(f"Warning: Sequence '{line}' not found in any split directory")
 
     def set_epoch(self, epoch):
         """Update sampling parameters based on current epoch."""

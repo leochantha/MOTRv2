@@ -1,6 +1,4 @@
 # Volleyball validation sequences
-# List one video/match directory name per line
-# These should match folder names in {mot_path}/val/
-# Example:
-# match_003
-# game_final
+# These match folder names in {mot_path}/valid/ or {mot_path}/val/
+# Add sequence names here, e.g.:
+# match2
