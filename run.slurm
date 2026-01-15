@@ -28,5 +28,5 @@ conda activate pytorch
 ## ./tools/train.sh configs/motrv2_volleyball.args
 
 
-## ./tools/simple_inference.sh ./motrv2_dancetrack.pth
+./tools/simple_inference.sh ./motrv2_dancetrack.pth
 python create_video.py

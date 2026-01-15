@@ -18,6 +18,7 @@
 --query_denoise 0.05
 --append_crowd
 --det_db det_db_motrv2_Volleyball_only.json
+--sub_dir volleyball/test
 --use_checkpoint
 --num_queries 10
 --score_threshold 0.35
