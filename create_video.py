@@ -4,9 +4,22 @@ import os
 import glob
 import json
 import sys
+import re
 from collections import defaultdict
 import argparse
 import math
+
+
+def natural_sort_key(filepath):
+    """Sort key for natural sorting of filenames with numbers.
+
+    Ensures '2.jpg' comes before '10.jpg' (numeric order, not lexicographic).
+    """
+    filename = os.path.basename(filepath)
+    # Split filename into text and number parts
+    parts = re.split(r'(\d+)', filename)
+    # Convert numeric parts to integers for proper sorting
+    return [int(part) if part.isdigit() else part.lower() for part in parts]
 
 def detect_format(file_path):
     """
@@ -94,7 +107,6 @@ def extract_frame_number(image_path):
     filename = image_path.split('/')[-1]
     
     # Try to extract number from filename
-    import re
     numbers = re.findall(r'\d+', filename)
     if numbers:
         return int(numbers[-1])  # Take the last number found
@@ -354,7 +366,7 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
     else:
         # Auto-detect frame files
         frame_pattern = os.path.join(frames_dir, f"*.{frame_format}")
-        frame_files = sorted(glob.glob(frame_pattern))
+        frame_files = sorted(glob.glob(frame_pattern), key=natural_sort_key)
         
         if not frame_files:
             # Try common frame naming patterns
@@ -366,7 +378,7 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
             
             for pattern in patterns:
                 frame_pattern = os.path.join(frames_dir, pattern)
-                frame_files = sorted(glob.glob(frame_pattern))
+                frame_files = sorted(glob.glob(frame_pattern), key=natural_sort_key)
                 if frame_files:
                     break
     
@@ -410,7 +422,6 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
                 frame_num = i + 1
         else:
             # Extract frame number from filename or use index
-            import re
             numbers = re.findall(r'\d+', os.path.basename(frame_file))
             if numbers:
                 frame_num = int(numbers[-1])
@@ -530,7 +541,6 @@ def find_submit_folders(exp_dir):
     Returns:
         List of (submit_dir, submit_num, metadata) tuples, sorted by submit number
     """
-    import re
     from pathlib import Path
 
     results = []
