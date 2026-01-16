@@ -5,7 +5,7 @@
 --lr_drop 40
 --lr 2e-4
 --lr_backbone 2e-5
---pretrained /data/projects/motr_mod/r50_deformable_detr_plus_iterative_bbox_refinement-checkpoint.pth
+--pretrained /home/es/es_es/es_lechit00/FP/MOTRv2/data/projects/motr_mod/r50_deformable_detr_plus_iterative_bbox_refinement-checkpoint.pth
 --batch_size 1
 --sample_mode random_interval
 --sample_interval 5
@@ -18,7 +18,7 @@
 --query_interaction_layer QIMv2
 --query_denoise 0.05
 --num_queries 50
---mot_path data/Dataset/mot/Volleyball-Activity-Dataset-3
+--mot_path /home/es/es_es/es_lechit00/FP/MOTRv2/data/Dataset/mot/Volleyball-Activity-Dataset-3
 --data_txt_path_train ./datasets/data_path/volleyball.train
 --data_txt_path_val ./datasets/data_path/volleyball.val
 --output_dir ./exps/motrv2_volleyball
