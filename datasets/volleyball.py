@@ -91,19 +91,39 @@ class DetVolleyballDetection:
 
         vid_files = list(self.labels_full.keys())
 
+        # Initialize existing_frames if not set (e.g., for JSON format)
+        if not hasattr(self, 'existing_frames'):
+            self.existing_frames = {}
+
         self.indices = []
         self.vid_tmax = {}
+        self.vid_frames = {}  # Store sorted list of valid frames per video
+
         for vid in vid_files:
             self.video_dict[vid] = len(self.video_dict)
             if not self.labels_full[vid]:
                 continue
-            t_min = min(self.labels_full[vid].keys())
-            t_max = max(self.labels_full[vid].keys()) + 1
-            self.vid_tmax[vid] = t_max - 1
-            for t in range(t_min, t_max - self.num_frames_per_batch):
-                self.indices.append((vid, t))
 
-        print(f"Found {len(vid_files)} volleyball videos, {len(self.indices)} valid frames")
+            # Get frames that have both images AND annotations
+            annotated_frames = set(self.labels_full[vid].keys())
+            if vid in self.existing_frames:
+                # Intersect with existing images
+                valid_frames = sorted(annotated_frames & set(self.existing_frames[vid]))
+            else:
+                valid_frames = sorted(annotated_frames)
+
+            if len(valid_frames) < self.num_frames_per_batch:
+                print(f"Warning: {vid} has only {len(valid_frames)} valid frames, need {self.num_frames_per_batch}")
+                continue
+
+            self.vid_frames[vid] = valid_frames
+            self.vid_tmax[vid] = valid_frames[-1]
+
+            # Create indices - use position in valid_frames list, not raw frame numbers
+            for idx in range(len(valid_frames) - self.num_frames_per_batch + 1):
+                self.indices.append((vid, idx))
+
+        print(f"Found {len(vid_files)} volleyball videos, {len(self.indices)} valid training samples")
 
         self.sampler_steps: list = args.sampler_steps
         self.lengths: list = args.sampler_lengths
@@ -221,6 +241,21 @@ class DetVolleyballDetection:
         - Full path: "train/match1"
         """
 
+        def get_existing_frames(vid_path):
+            """Scan img1 folder to find which frames actually exist."""
+            img_dir = os.path.join(self.mot_path, vid_path, 'img1')
+            if not os.path.exists(img_dir):
+                return set()
+
+            existing = set()
+            import re
+            for fname in os.listdir(img_dir):
+                # Extract frame number from filename
+                numbers = re.findall(r'\d+', fname)
+                if numbers:
+                    existing.add(int(numbers[0]))
+            return existing
+
         def load_sequence(vid_path):
             """Load annotations for a single sequence."""
             gt_path = os.path.join(self.mot_path, vid_path, 'gt', 'gt.txt')
@@ -229,7 +264,17 @@ class DetVolleyballDetection:
                 print(f"Warning: GT file not found: {gt_path}")
                 return False
 
-            print(f"  Loading: {vid_path}")
+            # First, scan which images actually exist
+            existing_frames = get_existing_frames(vid_path)
+            if not existing_frames:
+                print(f"Warning: No images found for {vid_path}")
+                return False
+
+            print(f"  Loading: {vid_path} ({len(existing_frames)} images found)")
+
+            loaded_frames = 0
+            skipped_frames = 0
+
             for l in open(gt_path):
                 parts = l.strip().split(',')
                 if len(parts) < 6:
@@ -246,10 +291,27 @@ class DetVolleyballDetection:
                     t, i = int(parts[0]), int(parts[1])
                     xywh = parts[2:6]
 
+                # Skip if image doesn't exist
+                if t not in existing_frames:
+                    skipped_frames += 1
+                    continue
+
                 x, y, w, h = map(float, xywh)
                 # Store: x, y, w, h, track_id, is_crowd, score
                 self.labels_full[vid_path][t].append([x, y, w, h, i, False, 1.0])
+                loaded_frames += 1
+
+            if skipped_frames > 0:
+                print(f"    Skipped {skipped_frames} annotations (missing images)")
+            print(f"    Loaded {len(self.labels_full[vid_path])} frames with annotations")
+
+            # Store existing frames for this video (for sampling)
+            self.existing_frames[vid_path] = sorted(existing_frames)
+
             return True
+
+        # Initialize existing frames tracker
+        self.existing_frames = {}
 
         # Read sequences from data_txt_path file
         print(f"Loading sequences from: {data_txt_path}")
@@ -426,23 +488,40 @@ class DetVolleyballDetection:
         )
         return default_range
 
-    def pre_continuous_frames(self, vid, indices):
-        """Load multiple consecutive frames."""
-        return zip(*[self._pre_single_frame(vid, i) for i in indices])
+    def pre_continuous_frames(self, vid, frame_numbers):
+        """Load multiple frames by their actual frame numbers."""
+        return zip(*[self._pre_single_frame(vid, frame_num) for frame_num in frame_numbers])
 
-    def sample_indices(self, vid, f_index):
-        """Sample frame indices with random interval."""
-        assert self.sample_mode == 'random_interval'
-        rate = randint(1, self.sample_interval + 1)
-        tmax = self.vid_tmax[vid]
-        ids = [f_index + rate * i for i in range(self.num_frames_per_batch)]
-        return [min(i, tmax) for i in ids]
+    def sample_indices(self, vid, start_pos):
+        """Sample frame indices from valid frames list.
+
+        Args:
+            vid: Video identifier
+            start_pos: Starting position in vid_frames list (not frame number)
+
+        Returns:
+            List of actual frame numbers to load
+        """
+        valid_frames = self.vid_frames[vid]
+        max_pos = len(valid_frames) - 1
+
+        if self.sample_mode == 'random_interval':
+            # Random interval sampling from valid frames
+            rate = randint(1, min(self.sample_interval + 1, (max_pos - start_pos) // self.num_frames_per_batch + 1))
+        else:
+            rate = 1
+
+        # Sample positions in the valid_frames list
+        positions = [min(start_pos + rate * i, max_pos) for i in range(self.num_frames_per_batch)]
+
+        # Convert positions to actual frame numbers
+        return [valid_frames[pos] for pos in positions]
 
     def __getitem__(self, idx):
         """Get a training sample (sequence of frames with annotations)."""
-        vid, f_index = self.indices[idx]
-        indices = self.sample_indices(vid, f_index)
-        images, targets = self.pre_continuous_frames(vid, indices)
+        vid, start_pos = self.indices[idx]
+        frame_numbers = self.sample_indices(vid, start_pos)
+        images, targets = self.pre_continuous_frames(vid, frame_numbers)
 
         if self.transform is not None:
             images, targets = self.transform(images, targets)
