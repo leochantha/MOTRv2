@@ -303,13 +303,13 @@ def add_panel_label(frame, label, position='top'):
     
     return combined
 
-def create_comparison_video(frames_dir, tracking_files, model_names, output_video, 
-                          fps=30, show_ids=True, show_confidence=False, 
+def create_comparison_video(frames_dir, tracking_files, model_names, output_video,
+                          fps=30, show_ids=True, show_confidence=False,
                           frame_format='jpg', frame_name_pattern=None,
-                          grid_layout=None):
+                          grid_layout=None, debug=False):
     """
     Create a comparison video with multiple tracking models side by side
-    
+
     Args:
         frames_dir: Directory containing individual frame images
         tracking_files: List of paths to tracking data files
@@ -321,6 +321,7 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
         frame_format: Format of frame images (jpg, png, etc.)
         frame_name_pattern: Custom pattern for frame naming
         grid_layout: Tuple (rows, cols) for grid layout, auto-calculated if None
+        debug: Print debug information for troubleshooting frame matching
     """
     
     num_models = len(tracking_files)
@@ -384,9 +385,29 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
     
     if not frame_files:
         raise ValueError(f"No frame files found in {frames_dir} with format {frame_format}")
-    
+
     print(f"Found {len(frame_files)} frame files")
-    
+
+    # Debug: Show frame number mapping
+    if debug:
+        print("\n=== DEBUG: Frame Number Mapping ===")
+        print(f"First 10 frame files:")
+        for i, ff in enumerate(frame_files[:10]):
+            fname = os.path.basename(ff)
+            numbers = re.findall(r'\d+', fname)
+            frame_num = int(numbers[-1]) if numbers else i + 1
+            print(f"  {i}: {fname} -> frame_num={frame_num}")
+
+        print(f"\nTracking data frame numbers (first model):")
+        if all_tracking_data[0]:
+            track_frames = sorted(all_tracking_data[0].keys())
+            print(f"  Total frames in tracking data: {len(track_frames)}")
+            print(f"  First 10: {track_frames[:10]}")
+            print(f"  Last 10: {track_frames[-10:]}")
+        else:
+            print("  No tracking data found!")
+        print("=" * 40 + "\n")
+
     # Read first frame to get dimensions
     first_frame = cv2.imread(frame_files[0])
     if first_frame is None:
@@ -673,7 +694,7 @@ def list_sequences_in_submit(submit_dir):
 
 def visualize_from_exp_dir(exp_dir, sequence_name, frames_dir, output_video,
                            submit_nums=None, fps=30, show_ids=True,
-                           show_confidence=False, detailed_headers=False):
+                           show_confidence=False, detailed_headers=False, debug=False):
     """Create comparison video from experiment output directory.
 
     Args:
@@ -686,6 +707,7 @@ def visualize_from_exp_dir(exp_dir, sequence_name, frames_dir, output_video,
         show_ids: Show track IDs
         show_confidence: Show confidence scores
         detailed_headers: Use multi-line detailed headers
+        debug: Print debug information
     """
     print(f"\n{'='*60}")
     print("  MOTRv2 Results Visualization")
@@ -754,7 +776,8 @@ def visualize_from_exp_dir(exp_dir, sequence_name, frames_dir, output_video,
         output_video=output_video,
         fps=fps,
         show_ids=show_ids,
-        show_confidence=show_confidence
+        show_confidence=show_confidence,
+        debug=debug
     )
 
 
@@ -968,6 +991,8 @@ Examples:
     parser.add_argument('--frame-pattern', help='Custom frame naming pattern (e.g., "{:06d}.jpg")')
     parser.add_argument('--grid-layout', nargs=2, type=int, metavar=('ROWS', 'COLS'),
                        help='Custom grid layout (rows cols)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Print debug info about frame number matching')
 
     # Search options
     parser.add_argument('--search-dirs', nargs='+', default=['./tracker', './results', './exps'],
@@ -1003,7 +1028,8 @@ Examples:
             submit_nums=args.submits,
             fps=args.fps,
             show_ids=not args.no_ids,
-            show_confidence=args.show_confidence
+            show_confidence=args.show_confidence,
+            debug=args.debug
         )
         return
 
@@ -1042,7 +1068,8 @@ Examples:
             show_confidence=args.show_confidence,
             frame_format=args.frame_format,
             frame_name_pattern=args.frame_pattern,
-            grid_layout=tuple(args.grid_layout) if args.grid_layout else None
+            grid_layout=tuple(args.grid_layout) if args.grid_layout else None,
+            debug=args.debug
         )
         return
 
@@ -1071,7 +1098,8 @@ Examples:
         show_confidence=args.show_confidence,
         frame_format=args.frame_format,
         frame_name_pattern=args.frame_pattern,
-        grid_layout=grid_layout
+        grid_layout=grid_layout,
+        debug=args.debug
     )
 
 
