@@ -429,6 +429,16 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
         print(f"  Parsing {model_names[i]}...")
         tracking_data = parse_tracking_data(tracking_file)
         all_tracking_data.append(tracking_data)
+
+        # Debug: Show sample parsed data
+        if debug and tracking_data:
+            sample_frames = sorted(tracking_data.keys())[:3]
+            print(f"    Sample parsed data:")
+            for fnum in sample_frames:
+                dets = tracking_data[fnum]
+                if dets:
+                    det = dets[0]
+                    print(f"      Frame {fnum}: {len(dets)} detections, first bbox: {det['bbox']}")
     
     # Get list of frame files
     if frame_name_pattern:
@@ -538,7 +548,16 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
             
             # Get detections for this frame and model
             detections = all_tracking_data[model_idx].get(frame_num, [])
-            
+
+            # Debug: Show detection coordinates vs frame size
+            if debug and detections and i < 3:  # Only first 3 frames
+                h, w = original_frame.shape[:2]
+                print(f"\n  Frame {frame_num} ({w}x{h}):")
+                for det in detections[:3]:  # First 3 detections
+                    x1, y1, x2, y2 = det['bbox']
+                    in_bounds = (0 <= x1 < w and 0 <= y1 < h and 0 <= x2 <= w and 0 <= y2 <= h)
+                    print(f"    bbox: ({x1}, {y1}) to ({x2}, {y2}) - {'IN BOUNDS' if in_bounds else 'OUT OF BOUNDS'}")
+
             # Draw bounding boxes
             if detections:
                 frame_copy = draw_bounding_boxes(frame_copy, detections, show_ids, show_confidence)
