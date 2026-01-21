@@ -242,29 +242,33 @@ class DetVolleyballDetection:
         """
 
         def extract_frame_num_from_filename(fname):
-            """Extract frame number from various filename formats."""
+            """Extract frame number from image filename.
+
+            NOTE: This extracts from FILENAMES like '000001.jpg', not folder names
+            like 'v_ApPxnw_Jffg_c001' which are sequence identifiers.
+            """
             import re
             name_without_ext = os.path.splitext(fname)[0]
 
-            # Pattern 1: Ends with _cNNN or _NNNN (e.g., v_ApPxnw_Jffg_c001)
-            match = re.search(r'_c?(\d+)$', name_without_ext)
+            # Pattern 1: Pure number filename (e.g., 000001, 1)
+            match = re.match(r'^(\d+)$', name_without_ext)
             if match:
                 return int(match.group(1))
 
-            # Pattern 2: Starts with number (e.g., 1_jpg, 001_frame, 000001)
-            match = re.match(r'^(\d+)', name_without_ext)
+            # Pattern 2: Starts with number followed by non-digit (e.g., 1_jpg, 001_frame)
+            match = re.match(r'^(\d+)[_\-\.]', name_without_ext)
             if match:
                 return int(match.group(1))
 
             # Pattern 3: frame_NNNN or img_NNNN
-            match = re.search(r'(?:frame|img|image)_?(\d+)', name_without_ext, re.IGNORECASE)
+            match = re.search(r'(?:frame|img|image)[_\-]?(\d+)', name_without_ext, re.IGNORECASE)
             if match:
                 return int(match.group(1))
 
-            # Fallback: Take the last sequence of digits
+            # Fallback: Take the first sequence of digits (more likely to be frame number)
             numbers = re.findall(r'\d+', name_without_ext)
             if numbers:
-                return int(numbers[-1])
+                return int(numbers[0])
 
             return None
 
