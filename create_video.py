@@ -54,52 +54,92 @@ def parse_tracking_data(txt_file):
 def parse_json_format(json_file):
     """
     Parse JSON format tracking data
-    Format: {"image_path": ["x,y,width,height,confidence", ...], ...}
+    Supports two formats:
+    1. String format: {"image_path": ["x,y,width,height,confidence", ...], ...}
+    2. Dict format: {"image_path": [{"x": x, "y": y, "width": w, "height": h, ...}, ...], ...}
     """
     tracking_data = defaultdict(list)
-    
+
     with open(json_file, 'r') as f:
         data = json.load(f)
-    
+
     for image_path, detections in data.items():
         # Extract frame number from image path
-        # Assumes format like "volleyball/test/test1/img1/000001"
         frame_num = extract_frame_number(image_path)
-        
-        for i, detection_str in enumerate(detections):
-            # Clean the detection string - remove quotes, newlines, and whitespace
-            detection_str = detection_str.strip().strip('\n').strip('"').strip("'")
-            if not detection_str:
-                continue
-                
-            parts = detection_str.split(',')
-            if len(parts) >= 4:
-                try:
-                    # Clean each part and convert to float
+
+        for i, detection in enumerate(detections):
+            try:
+                # Handle dict format (e.g., {"x": 10, "y": 20, "width": 100, "height": 200})
+                if isinstance(detection, dict):
+                    # Try different key naming conventions
+                    if 'x' in detection:
+                        top_left_x = float(detection.get('x', 0))
+                        top_left_y = float(detection.get('y', 0))
+                        width = float(detection.get('width', 0))
+                        height = float(detection.get('height', 0))
+                    elif 'bbox' in detection:
+                        # Format: {"bbox": [x, y, w, h], ...}
+                        bbox = detection['bbox']
+                        top_left_x, top_left_y, width, height = bbox[0], bbox[1], bbox[2], bbox[3]
+                    elif 'x1' in detection:
+                        # Format: {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                        x1 = float(detection.get('x1', 0))
+                        y1 = float(detection.get('y1', 0))
+                        x2 = float(detection.get('x2', 0))
+                        y2 = float(detection.get('y2', 0))
+                        top_left_x, top_left_y = x1, y1
+                        width, height = x2 - x1, y2 - y1
+                    else:
+                        print(f"Warning: Unknown dict format for detection: {detection}")
+                        continue
+
+                    confidence = float(detection.get('confidence', detection.get('score', detection.get('conf', 1.0))))
+                    object_id = detection.get('track_id', detection.get('id', detection.get('object_id', i)))
+
+                # Handle string format (e.g., "x,y,width,height,confidence")
+                elif isinstance(detection, str):
+                    detection_str = detection.strip().strip('\n').strip('"').strip("'")
+                    if not detection_str:
+                        continue
+
+                    parts = detection_str.split(',')
+                    if len(parts) < 4:
+                        continue
+
                     top_left_x = float(parts[0].strip().strip('"').strip("'"))
                     top_left_y = float(parts[1].strip().strip('"').strip("'"))
                     width = float(parts[2].strip().strip('"').strip("'"))
                     height = float(parts[3].strip().strip('"').strip("'"))
                     confidence = float(parts[4].strip().strip('"').strip("'")) if len(parts) > 4 else 1.0
-                except (ValueError, IndexError) as e:
-                    print(f"Warning: Could not parse detection '{detection_str}': {e}")
+                    object_id = i
+
+                # Handle list format (e.g., [x, y, w, h, conf])
+                elif isinstance(detection, (list, tuple)):
+                    if len(detection) >= 4:
+                        top_left_x, top_left_y, width, height = detection[0], detection[1], detection[2], detection[3]
+                        confidence = detection[4] if len(detection) > 4 else 1.0
+                        object_id = i
+                    else:
+                        continue
+                else:
+                    print(f"Warning: Unknown detection format type: {type(detection)}")
                     continue
-                
-                # Use detection index as object_id since no ID is provided
-                object_id = i
-                
+
                 x1 = int(top_left_x)
                 y1 = int(top_left_y)
                 x2 = int(top_left_x + width)
                 y2 = int(top_left_y + height)
-                
+
                 tracking_data[frame_num].append({
                     'object_id': object_id,
                     'bbox': (x1, y1, x2, y2),
                     'confidence': confidence,
                     'center': (int(top_left_x + width/2), int(top_left_y + height/2))
                 })
-    
+            except (ValueError, IndexError, KeyError, TypeError) as e:
+                print(f"Warning: Could not parse detection '{detection}': {e}")
+                continue
+
     return tracking_data
 
 def extract_frame_number(image_path):
