@@ -457,10 +457,8 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
         print("\n=== DEBUG: Frame Number Mapping ===")
         print(f"First 10 frame files:")
         for i, ff in enumerate(frame_files[:10]):
-            fname = os.path.basename(ff)
-            numbers = re.findall(r'\d+', fname)
-            frame_num = int(numbers[-1]) if numbers else i + 1
-            print(f"  {i}: {fname} -> frame_num={frame_num}")
+            frame_num = extract_frame_number(ff)
+            print(f"  {i}: {os.path.basename(ff)} -> frame_num={frame_num}")
 
         print(f"\nTracking data frame numbers (first model):")
         if all_tracking_data[0]:
@@ -506,12 +504,8 @@ def create_comparison_video(frames_dir, tracking_files, model_names, output_vide
             else:
                 frame_num = i + 1
         else:
-            # Extract frame number from filename or use index
-            numbers = re.findall(r'\d+', os.path.basename(frame_file))
-            if numbers:
-                frame_num = int(numbers[-1])
-            else:
-                frame_num = i + 1
+            # Extract frame number from filename using consistent logic
+            frame_num = extract_frame_number(frame_file)
         
         # Read original frame
         original_frame = cv2.imread(frame_file)
