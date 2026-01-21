@@ -241,20 +241,55 @@ class DetVolleyballDetection:
         - Full path: "train/match1"
         """
 
+        def extract_frame_num_from_filename(fname):
+            """Extract frame number from image filename.
+
+            NOTE: This extracts from FILENAMES like '000001.jpg', not folder names
+            like 'v_ApPxnw_Jffg_c001' which are sequence identifiers.
+            """
+            import re
+            name_without_ext = os.path.splitext(fname)[0]
+
+            # Pattern 1: Pure number filename (e.g., 000001, 1)
+            match = re.match(r'^(\d+)$', name_without_ext)
+            if match:
+                return int(match.group(1))
+
+            # Pattern 2: Starts with number followed by non-digit (e.g., 1_jpg, 001_frame)
+            match = re.match(r'^(\d+)[_\-\.]', name_without_ext)
+            if match:
+                return int(match.group(1))
+
+            # Pattern 3: frame_NNNN or img_NNNN
+            match = re.search(r'(?:frame|img|image)[_\-]?(\d+)', name_without_ext, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+
+            # Fallback: Take the first sequence of digits (more likely to be frame number)
+            numbers = re.findall(r'\d+', name_without_ext)
+            if numbers:
+                return int(numbers[0])
+
+            return None
+
         def get_existing_frames(vid_path):
             """Scan img1 folder to find which frames actually exist."""
             img_dir = os.path.join(self.mot_path, vid_path, 'img1')
             if not os.path.exists(img_dir):
-                return set()
+                return set(), {}
 
             existing = set()
-            import re
+            frame_to_filename = {}  # Map frame number to actual filename
+
             for fname in os.listdir(img_dir):
-                # Extract frame number from filename
-                numbers = re.findall(r'\d+', fname)
-                if numbers:
-                    existing.add(int(numbers[0]))
-            return existing
+                if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    continue
+                frame_num = extract_frame_num_from_filename(fname)
+                if frame_num is not None:
+                    existing.add(frame_num)
+                    frame_to_filename[frame_num] = fname
+
+            return existing, frame_to_filename
 
         def load_sequence(vid_path):
             """Load annotations for a single sequence."""
@@ -265,7 +300,7 @@ class DetVolleyballDetection:
                 return False
 
             # First, scan which images actually exist
-            existing_frames = get_existing_frames(vid_path)
+            existing_frames, frame_to_filename = get_existing_frames(vid_path)
             if not existing_frames:
                 print(f"Warning: No images found for {vid_path}")
                 return False
@@ -305,13 +340,15 @@ class DetVolleyballDetection:
                 print(f"    Skipped {skipped_frames} annotations (missing images)")
             print(f"    Loaded {len(self.labels_full[vid_path])} frames with annotations")
 
-            # Store existing frames for this video (for sampling)
+            # Store existing frames and filename mapping for this video
             self.existing_frames[vid_path] = sorted(existing_frames)
+            self.frame_to_filename[vid_path] = frame_to_filename
 
             return True
 
-        # Initialize existing frames tracker
+        # Initialize existing frames tracker and filename mapping
         self.existing_frames = {}
+        self.frame_to_filename = {}
 
         # Read sequences from data_txt_path file
         print(f"Loading sequences from: {data_txt_path}")
@@ -372,11 +409,18 @@ class DetVolleyballDetection:
 
     def _get_image_path(self, vid, idx):
         """Get image path for a given video and frame index."""
+        # First, check if we have a filename mapping (handles non-standard filenames)
+        if hasattr(self, 'frame_to_filename') and vid in self.frame_to_filename:
+            if idx in self.frame_to_filename[vid]:
+                actual_filename = self.frame_to_filename[vid][idx]
+                img_path = os.path.join(self.mot_path, vid, 'img1', actual_filename)
+                if os.path.exists(img_path):
+                    return img_path
+
         # Check if we have a stored path from JSON format
         img_key = (vid, idx)
         if img_key in self.frame_paths:
             # JSON format - reconstruct image path
-            # The JSON key might be gt path, we need to find the actual image
             json_key = self.frame_paths[img_key]
             # Try common image locations
             possible_paths = [
