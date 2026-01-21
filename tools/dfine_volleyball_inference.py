@@ -153,8 +153,9 @@ class DFINEDetector:
         # Run inference
         outputs = self.model(img_tensor)
         
-        # Post-process
-        orig_sizes = torch.tensor([orig_size[::-1]]).to(self.device)  # [h, w]
+        # Post-process - pass original sizes as [w, h] without reversal
+        # orig_size from preprocess is (w, h)
+        orig_sizes = torch.tensor([list(orig_size)]).to(self.device)  # [w, h]
         results = self.postprocessor(outputs, orig_sizes)
         
         detections = []
@@ -201,7 +202,7 @@ class DFINEDetector:
         for img_path in image_paths:
             tensor, orig_size = self.preprocess(img_path)
             tensors.append(tensor)
-            orig_sizes.append(orig_size[::-1])  # [h, w]
+            orig_sizes.append(list(orig_size))  # [w, h] - no reversal needed
         
         # Stack into batch
         batch = torch.cat(tensors, dim=0)
