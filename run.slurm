@@ -29,4 +29,4 @@ conda activate pytorch
 
 ## ./tools/simple_inference.sh ./motrv2_dancetrack.pth
 
-python ./tools/create_video.py data/Dataset/mot/SportsMOT_Volleyball/train/v_ApPxnw_Jffg_c001 v_ApPxnw_Jffg_c001 --tracking-files data/Dataset/mot/SportsMOT_Volleyball/ball_detections/train/v_ApPxnw_Jffg_c001_ball_detections.json --model-names "v_ApPxnw_Jffg_c001"
+python create_video.py data/Dataset/mot/SportsMOT_Volleyball/train/v_ApPxnw_Jffg_c001/img1 v_ApPxnw_Jffg_c001 --tracking-files data/Dataset/mot/SportsMOT_Volleyball/ball_detections/train/v_ApPxnw_Jffg_c001_ball_detections.json --model-names "v_ApPxnw_Jffg_c001"
