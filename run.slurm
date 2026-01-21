@@ -27,7 +27,6 @@ conda activate pytorch
 
 ## ./tools/train.sh configs/motrv2_volleyball.args
 
-##python tools/prepare_roboflow_dataset.py --dataset-dir data/Dataset/mot/Volleyball-Activity-Dataset-3 --sequence train/match1 --det-json finetune_gt_dfine.json
-
 ## ./tools/simple_inference.sh ./motrv2_dancetrack.pth
-python create_video.py data/Dataset/mot/Volleyball-Activity-Dataset-3/train/match1/img1 output.mp4 --tracking-files data/Dataset/mot/Volleyball-Activity-Dataset-3/train/match1/gt/gt.txt --model-names "New Visualization Script"
+
+python ./tools/create_video.py data/Dataset/mot/SportsMOT_Volleyball/train/v_ApPxnw_Jffg_c001 v_ApPxnw_Jffg_c001 --tracking-files data/Dataset/mot/SportsMOT_Volleyball/ball_detections/train/v_ApPxnw_Jffg_c001_ball_detections.json --model-names "v_ApPxnw_Jffg_c001"
