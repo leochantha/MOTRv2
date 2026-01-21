@@ -54,18 +54,29 @@ def parse_tracking_data(txt_file):
 def parse_json_format(json_file):
     """
     Parse JSON format tracking data
-    Supports two formats:
-    1. String format: {"image_path": ["x,y,width,height,confidence", ...], ...}
-    2. Dict format: {"image_path": [{"x": x, "y": y, "width": w, "height": h, ...}, ...], ...}
+    Supports multiple key formats:
+    1. Frame numbers as keys: {"27": [...], "28": [...]}
+    2. Image paths as keys: {"path/to/000001.jpg": [...]}
+
+    And multiple detection formats:
+    1. Dict with bbox: {"bbox": [x, y, w, h], "confidence": 0.9}
+    2. Dict with x/y/width/height: {"x": x, "y": y, "width": w, "height": h}
+    3. String format: "x,y,width,height,confidence"
+    4. List format: [x, y, w, h, conf]
     """
     tracking_data = defaultdict(list)
 
     with open(json_file, 'r') as f:
         data = json.load(f)
 
-    for image_path, detections in data.items():
-        # Extract frame number from image path
-        frame_num = extract_frame_number(image_path)
+    for key, detections in data.items():
+        # Determine if key is a frame number or image path
+        # If key is purely numeric, use it directly as frame number
+        if key.isdigit():
+            frame_num = int(key)
+        else:
+            # Extract frame number from image path
+            frame_num = extract_frame_number(key)
 
         for i, detection in enumerate(detections):
             try:
