@@ -14,12 +14,16 @@ def natural_sort_key(filepath):
     """Sort key for natural sorting of filenames with numbers.
 
     Ensures '2.jpg' comes before '10.jpg' (numeric order, not lexicographic).
+    Handles formats like 'v_ApPxnw_Jffg_c001.jpg' by extracting frame number.
     """
     filename = os.path.basename(filepath)
-    # Split filename into text and number parts
+    # Extract the frame number for primary sorting
+    frame_num = extract_frame_number(filepath)
+    # Split filename into text and number parts for secondary sorting
     parts = re.split(r'(\d+)', filename)
-    # Convert numeric parts to integers for proper sorting
-    return [int(part) if part.isdigit() else part.lower() for part in parts]
+    secondary = [int(part) if part.isdigit() else part.lower() for part in parts]
+    # Primary sort by frame number, secondary by natural sort of full filename
+    return (frame_num, secondary)
 
 def detect_format(file_path):
     """
@@ -101,22 +105,50 @@ def parse_json_format(json_file):
 def extract_frame_number(image_path):
     """
     Extract frame number from image path
-    Handles various naming conventions
+    Handles various naming conventions including:
+    - 000001.jpg (standard MOT)
+    - frame_000001.jpg
+    - v_ApPxnw_Jffg_c001.jpg (video clip format)
+    - 1_jpg.rf.xxxxx.jpg (Roboflow format)
     """
-    # Split by '/' and get the last part
+    # Split by '/' and get the last part (filename)
     filename = image_path.split('/')[-1]
-    
-    # Try to extract number from filename
-    numbers = re.findall(r'\d+', filename)
+    # Remove extension
+    name_without_ext = os.path.splitext(filename)[0]
+
+    # Try common patterns in order of specificity
+
+    # Pattern 1: Ends with _cNNN or _NNNN (e.g., v_ApPxnw_Jffg_c001)
+    match = re.search(r'_c?(\d+)$', name_without_ext)
+    if match:
+        return int(match.group(1))
+
+    # Pattern 2: Starts with number followed by underscore (e.g., 1_jpg, 001_frame)
+    match = re.match(r'^(\d+)_', name_without_ext)
+    if match:
+        return int(match.group(1))
+
+    # Pattern 3: Pure number filename (e.g., 000001)
+    match = re.match(r'^(\d+)$', name_without_ext)
+    if match:
+        return int(match.group(1))
+
+    # Pattern 4: frame_NNNN or img_NNNN
+    match = re.search(r'(?:frame|img|image)_?(\d+)', name_without_ext, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    # Fallback: Take the last sequence of digits
+    numbers = re.findall(r'\d+', name_without_ext)
     if numbers:
-        return int(numbers[-1])  # Take the last number found
-    else:
-        # If no numbers found, try to get from path
-        path_numbers = re.findall(r'\d+', image_path)
-        if path_numbers:
-            return int(path_numbers[-1])
-        else:
-            return 1  # Default to frame 1
+        return int(numbers[-1])
+
+    # If no numbers found, try the full path
+    path_numbers = re.findall(r'\d+', image_path)
+    if path_numbers:
+        return int(path_numbers[-1])
+
+    return 1  # Default to frame 1
 
 def parse_csv_format(txt_file):
     """
